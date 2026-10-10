@@ -5,7 +5,7 @@ import { publish } from "@/lib/events";
 export const PATCH = route(async (req: Request, { params }: Params<"id">) => {
   const { id } = await params;
   const b = await req.json();
-  const data = Object.fromEntries(Object.entries(b).filter(([k]) => ["name", "description", "locked", "voiceId", "color"].includes(k)));
+  const data = Object.fromEntries(Object.entries(b).filter(([k]) => ["name", "description", "locked", "voiceId", "color", "role", "age", "gender", "handle"].includes(k)));
   const c = await db.character.update({ where: { id }, data });
   publish(c.projectId, { type: "refresh", scope: "characters" });
   return ok(c);

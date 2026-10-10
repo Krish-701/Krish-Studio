@@ -11,7 +11,7 @@ export const GET = route(async (_: Request, { params }: Params<"id">) => {
 export const PATCH = route(async (req: Request, { params }: Params<"id">) => {
   const { id } = await params;
   const b = await req.json();
-  const allowed = ["title", "logline", "stage", "aspectRatio", "styleLock", "defaults", "scriptText"];
+  const allowed = ["title", "logline", "stage", "aspectRatio", "styleLock", "defaults", "scriptText", "format", "targetRuntimeSec", "resolution", "fps", "language", "synopsis", "setupDone", "wizardStep"];
   const data = Object.fromEntries(Object.entries(b).filter(([k]) => allowed.includes(k)));
   const p = await db.project.update({ where: { id }, data });
   publish(id, { type: "refresh", scope: "project" });

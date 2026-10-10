@@ -7,6 +7,9 @@ import type { StudioEvent } from "@/lib/events";
 
 export type Shot = ProjectState["shots"][number];
 export type Character = ProjectState["characters"][number];
+export type Element = ProjectState["elements"][number];
+export type Sequence = ProjectState["sequences"][number];
+export type Scene = ProjectState["scenes"][number];
 export type Job = ProjectState["jobs"][number];
 export type Clip = ProjectState["clips"][number];
 export type Finding = ProjectState["findings"][number];
@@ -61,7 +64,7 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
     didInit.current = true;
     const fromHash = typeof window !== "undefined" ? (window.location.hash.slice(1) as View) : null;
     if (fromHash && ["script", "characters", "style", "storyboard", "timeline", "export"].includes(fromHash)) setViewState(fromHash);
-    else if (!data.shots.length) setViewState("script");
+    else if (!data.shots.length && !data.sequences.length && data.project.setupDone) setViewState("script");
     else if (data.project.stage === "VIDEO" || data.project.stage === "AUDIO") setViewState("timeline");
   }, [data]);
 
@@ -102,7 +105,7 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
             },
             { revalidate: false },
           );
-          if (j.status === "SUCCEEDED" && ["PARSE_SCRIPT", "EXPORT_MP4", "EXPORT_PDF", "MUSIC", "SFX", "TTS"].includes(j.type)) scheduleRefresh();
+          if (j.status === "SUCCEEDED" && ["PARSE_SCRIPT", "EXPORT_MP4", "EXPORT_PDF", "MUSIC", "SFX", "TTS", "WRITE_OUTLINE", "WRITE_SEQUENCE", "DESIGN_SHEET", "CONTACT_SHEET", "MULTISHOT_VIDEO", "EXTEND_VIDEO", "EXPORT_PACKAGE"].includes(j.type)) scheduleRefresh();
           break;
         }
         case "shot":

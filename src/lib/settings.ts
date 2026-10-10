@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { decryptSecret, encryptSecret, maskSecret } from "./crypto";
+import { setLiveCatalog, type ModelInfo } from "./generation/catalog";
 
 export type Capability = "image" | "video" | "tts" | "music" | "sfx" | "upscale" | "inpaint";
 export const ALL_CAPABILITIES: Capability[] = ["image", "video", "tts", "music", "sfx", "upscale", "inpaint"];
@@ -86,6 +87,8 @@ export async function getSettings(): Promise<Settings> {
       },
     });
   }
+  // Models synced from the provider extend the built-in catalog everywhere (UI, planner, worker).
+  setLiveCatalog((row.modelCatalog as unknown as { image?: ModelInfo[]; video?: ModelInfo[] }) ?? null);
   const servers = ((row.mcpServers as unknown as McpServerConfig[]) || []).map((s) => ({
     ...s,
     token: decryptSecret(s.token),

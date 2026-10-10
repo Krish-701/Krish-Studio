@@ -24,6 +24,13 @@ export const POST = route(async (req: Request) => {
       title: String(body.title || "Untitled film").slice(0, 120),
       logline: body.logline || null,
       aspectRatio: body.aspectRatio || "16:9",
+      format: body.format || "short",
+      targetRuntimeSec: Math.min(10800, Math.max(15, Number(body.targetRuntimeSec) || 60)),
+      resolution: body.resolution || "1080p",
+      language: body.language || "English",
+      synopsis: body.synopsis || null,
+      // Films started from the wizard stay in setup until "Write my film".
+      setupDone: !body.wizard,
       defaults: { image: "seedream-5-pro", video: "bytedance-seedance-pro-2.5" },
     },
   });

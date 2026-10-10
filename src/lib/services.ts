@@ -89,13 +89,19 @@ export async function queueImages(projectId: string, shotIds?: string[] | "all" 
   return jobs;
 }
 
-export async function queueVideos(projectId: string, shotIds?: string[] | "all" | "missing", mode: "i2v" | "t2v" = "i2v", opts: { model?: string } = {}) {
+/**
+ * mode: undefined/"auto" uses each shot's reference mode; "i2v"/"frame", "t2v"/"reference" or "text" force one.
+ * Shots set to continuity "extend" are queued as clip extensions of the previous shot.
+ */
+export async function queueVideos(projectId: string, shotIds?: string[] | "all" | "missing", mode?: string, opts: { model?: string } = {}) {
   const ids = await shotIdsOrAll(projectId, shotIds, "videoAssetId");
   const jobs = [];
+  const shots = await db.shot.findMany({ where: { id: { in: ids } }, select: { id: true, continuity: true } });
   for (const id of ids) {
     if (opts.model) await db.shot.update({ where: { id }, data: { videoModel: opts.model } });
     await markShot(projectId, id, { videoStatus: "QUEUED" });
-    jobs.push(await enqueue({ projectId, shotId: id, type: "VIDEO", input: { mode } }));
+    const extend = shots.find((s) => s.id === id)?.continuity === "extend";
+    jobs.push(await enqueue({ projectId, shotId: id, type: extend ? "EXTEND_VIDEO" : "VIDEO", input: { mode: mode === "auto" ? undefined : mode } }));
   }
   await db.project.updateMany({ where: { id: projectId, stage: { in: ["SCRIPT", "STORYBOARD"] } }, data: { stage: "VIDEO" } });
   return jobs;
@@ -193,8 +199,10 @@ export async function projectOverview(projectId: string) {
   const p = await db.project.findUniqueOrThrow({
     where: { id: projectId },
     include: {
-      scenes: { orderBy: { index: "asc" }, include: { _count: { select: { shots: true } } } },
+      scenes: { orderBy: { index: "asc" }, include: { _count: { select: { shots: true } }, locationEl: { select: { name: true } } } },
+      sequences: { orderBy: { index: "asc" }, include: { _count: { select: { scenes: true } } } },
       characters: { include: { _count: { select: { references: true } } } },
+      elements: { include: { _count: { select: { references: true } } } },
       _count: { select: { shots: true } },
     },
   });
@@ -203,14 +211,101 @@ export async function projectOverview(projectId: string) {
   return {
     title: p.title,
     logline: p.logline,
+    format: p.format,
+    targetRuntimeSec: p.targetRuntimeSec,
+    synopsis: p.synopsis,
     stage: p.stage,
     aspectRatio: p.aspectRatio,
+    resolution: p.resolution,
     styleLock: p.styleLock,
     defaults: p.defaults,
     totalShots: p._count.shots,
     frames: Object.fromEntries(shots.map((s) => [s.imageStatus, s._count])),
     clips: Object.fromEntries(vids.map((s) => [s.videoStatus, s._count])),
-    scenes: p.scenes.map((s) => ({ id: s.id, index: s.index + 1, heading: s.heading, shots: s._count.shots, summary: s.summary })),
-    characters: p.characters.map((c) => ({ id: c.id, name: c.name, description: c.description, locked: c.locked, referenceImages: c._count.references, voiceId: c.voiceId })),
+    sequences: p.sequences.map((q) => ({ id: q.id, index: q.index + 1, act: q.act, title: q.title, status: q.status, scenes: q._count.scenes, targetSec: q.targetDurationSec })),
+    // Long films: scene list is capped; use list_shots with a scene or sequence filter for detail.
+    scenes: p.scenes.slice(0, 120).map((s) => ({ id: s.id, index: s.index + 1, heading: s.heading, set: s.locationEl?.name ?? null, shots: s._count.shots, summary: s.summary?.slice(0, 200) ?? null })),
+    moreScenes: Math.max(0, p.scenes.length - 120),
+    characters: p.characters.map((c) => ({ id: c.id, name: c.name, handle: c.handle, role: c.role, description: c.description, locked: c.locked, referenceImages: c._count.references, designSheet: !!c.sheetAssetId, voiceId: c.voiceId })),
+    sets: p.elements.filter((e) => e.kind === "location").map((e) => ({ id: e.id, name: e.name, description: e.description, referenceImages: e._count.references })),
+    props: p.elements.filter((e) => e.kind === "prop").map((e) => ({ id: e.id, name: e.name, description: e.description, referenceImages: e._count.references })),
   };
+}
+
+// ---------------- long-form production ----------------
+
+/** "Write my film": outline (acts → sequences), then optionally board every sequence. */
+export async function writeFilm(projectId: string, writeAll = true) {
+  await db.project.update({ where: { id: projectId }, data: { setupDone: true } });
+  return enqueue({ projectId, type: "WRITE_OUTLINE", input: { writeAll }, maxAttempts: 2 });
+}
+
+export async function writeSequences(projectId: string, sequenceIds?: string[]) {
+  const seqs = await db.sequence.findMany({ where: { projectId, ...(sequenceIds?.length ? { id: { in: sequenceIds } } : { status: { not: "written" } }) }, orderBy: { index: "asc" } });
+  const jobs = [];
+  for (const s of seqs) jobs.push(await enqueue({ projectId, type: "WRITE_SEQUENCE", input: { sequenceId: s.id }, maxAttempts: 2 }));
+  return jobs;
+}
+
+export async function queueDesignSheet(projectId: string, input: { characterId?: string; elementId?: string; kind?: "turnaround" | "wardrobe" | "plate"; look?: string; lookDescription?: string; model?: string }) {
+  return enqueue({ projectId, type: "DESIGN_SHEET", input, maxAttempts: 2 });
+}
+
+/** Shot ids for a scope: explicit ids, a scene, a sequence, an act, or the whole film. */
+export async function shotsInScope(projectId: string, scope: { shotIds?: string[]; sceneId?: string; sequenceId?: string; act?: number; missing?: "image" | "video" }) {
+  const where: Prisma.ShotWhereInput = { projectId };
+  if (scope.shotIds?.length) where.id = { in: scope.shotIds };
+  if (scope.sceneId) where.sceneId = scope.sceneId;
+  if (scope.sequenceId) where.scene = { sequenceId: scope.sequenceId };
+  if (scope.act) where.scene = { sequence: { act: scope.act } };
+  if (scope.missing === "image") where.imageAssetId = null;
+  if (scope.missing === "video") where.videoAssetId = null;
+  return db.shot.findMany({ where, orderBy: { order: "asc" }, select: { id: true, sceneId: true, durationSec: true, order: true } });
+}
+
+/** Contact sheets: each scene's shots drawn together, up to 9 per sheet. */
+export async function queueContactSheets(projectId: string, scope: Parameters<typeof shotsInScope>[1] & { model?: string }) {
+  const shots = await shotsInScope(projectId, scope);
+  const byScene = new Map<string, string[]>();
+  for (const s of shots) byScene.set(s.sceneId ?? "none", [...(byScene.get(s.sceneId ?? "none") ?? []), s.id]);
+  const jobs = [];
+  for (const ids of byScene.values()) {
+    for (let i = 0; i < ids.length; i += 9) {
+      const chunk = ids.slice(i, i + 9);
+      for (const id of chunk) await markShot(projectId, id, { imageStatus: "QUEUED" });
+      jobs.push(await enqueue({ projectId, type: "CONTACT_SHEET", input: { shotIds: chunk, model: scope.model } }));
+    }
+  }
+  await db.project.updateMany({ where: { id: projectId, stage: "SCRIPT" }, data: { stage: "STORYBOARD" } });
+  return jobs;
+}
+
+/**
+ * Scene clips in one multi-shot call per run of consecutive shots (up to the model's shot limit and max length),
+ * so cuts inside a scene share one generation: same faces, light and set.
+ */
+export async function queueMultishot(projectId: string, scope: Parameters<typeof shotsInScope>[1] & { model?: string }) {
+  const { videoModel } = await import("./generation/catalog");
+  const shots = await shotsInScope(projectId, scope);
+  const project = await db.project.findUniqueOrThrow({ where: { id: projectId } });
+  const slug = scope.model || (project.defaults as Record<string, string>)?.video || "bytedance-seedance-pro-2.5";
+  const m = videoModel(slug);
+  if (!m?.multishot) throw new Error(`${m?.name ?? slug} can't generate several shots in one call. Pick Seedance 2.x or Kling 3.0.`);
+  const maxLen = Math.max(...(m.durations ?? [15]));
+  const jobs: Awaited<ReturnType<typeof enqueue>>[] = [];
+  let group: typeof shots = [];
+  const flush = async () => {
+    if (!group.length) return;
+    for (const s of group) await markShot(projectId, s.id, { videoStatus: "QUEUED", multishotGroup: group[0].id });
+    jobs.push(await enqueue({ projectId, type: "MULTISHOT_VIDEO", input: { shotIds: group.map((s) => s.id), model: slug } }));
+    group = [];
+  };
+  for (const s of shots) {
+    const len = group.reduce((a, b) => a + Math.min(m.multishot!.max, b.durationSec), 0) + Math.min(m.multishot.max, s.durationSec);
+    if (group.length && (group[0].sceneId !== s.sceneId || group.length >= m.multishot.limit || len > maxLen)) await flush();
+    group.push(s);
+  }
+  await flush();
+  await db.project.updateMany({ where: { id: projectId, stage: { in: ["SCRIPT", "STORYBOARD"] } }, data: { stage: "VIDEO" } });
+  return jobs;
 }

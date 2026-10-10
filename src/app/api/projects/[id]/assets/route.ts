@@ -6,11 +6,16 @@ import { fail, ok, route, type Params } from "@/lib/api";
 import { publish } from "@/lib/events";
 import { ffmpeg, probeDuration, tmpDir } from "@/lib/ffmpeg";
 import { localPath, newKey, putFile } from "@/lib/storage";
+import { splitGrid } from "@/lib/media";
 import type { StyleLock } from "@/lib/prompt-builder";
 
 export const maxDuration = 300;
 
-const ROLES: AssetRole[] = ["MASK", "CHARACTER_REF", "STYLE_REF", "MOODBOARD", "VIDEO_REF", "SHOT_IMAGE", "SHOT_VIDEO", "VOICEOVER", "MUSIC", "SFX"];
+const ROLES: AssetRole[] = [
+  "MASK", "CHARACTER_REF", "STYLE_REF", "MOODBOARD", "VIDEO_REF", "SHOT_IMAGE", "SHOT_VIDEO", "VOICEOVER", "MUSIC", "SFX",
+  "CHARACTER_SHEET", "WARDROBE_REF", "ELEMENT_REF", "CONTACT_SHEET", "MOTION_REF", "AUDIO_REF",
+];
+const ANGLES = ["front", "three_quarter", "side", "back", "full_body"];
 
 function kindOf(mime: string): AssetKind {
   if (mime.startsWith("image/")) return "IMAGE";
@@ -20,7 +25,10 @@ function kindOf(mime: string): AssetKind {
 }
 
 /**
- * Multipart upload: files[], role, characterId?, angle?, shotId?, lockStyle?
+ * Multipart upload: files[], role, characterId?, elementId?, angle?, look?, shotId?, lockStyle?, cols?, rows?
+ * Contact sheets / turnarounds (role CONTACT_SHEET or CHARACTER_SHEET with cols/rows) are cut into tiles:
+ * a character's sheet becomes angle references, a set's sheet becomes set references, a scene's sheet becomes shot frames (shotIds[]).
+ * A motion reference uploaded for a shot is attached to that shot.
  * Style/moodboard images are added to the project style lock automatically.
  * Reference videos get a keyframe extracted as a style image so they can steer generations.
  */
@@ -30,7 +38,12 @@ export const POST = route(async (req: Request, { params }: Params<"id">) => {
   const role = String(form.get("role") || "STYLE_REF") as AssetRole;
   if (!ROLES.includes(role)) return fail("Bad role");
   const characterId = (form.get("characterId") as string) || null;
+  const elementId = (form.get("elementId") as string) || null;
   const shotId = (form.get("shotId") as string) || null;
+  const look = (form.get("look") as string) || null;
+  const cols = Number(form.get("cols")) || 0;
+  const rows = Number(form.get("rows")) || 0;
+  const sheetShotIds = form.getAll("shotIds").map(String);
   const angles = form.getAll("angle").map(String);
   const files = form.getAll("files").filter((f): f is File => f instanceof File);
   if (!files.length) return fail("No files");
@@ -44,9 +57,33 @@ export const POST = route(async (req: Request, { params }: Params<"id">) => {
     const kind = kindOf(mime);
     const durationSec = kind === "VIDEO" || kind === "AUDIO" ? await probeDuration(await localPath(key)) : null;
     const asset = await db.asset.create({
-      data: { projectId: id, kind, role, name: file.name, storageKey: stored.key, url: stored.url, mimeType: mime, characterId, shotId, angle: angles[i] || angles[0] || null, durationSec },
+      data: {
+        projectId: id, kind, role, name: role === "WARDROBE_REF" && look ? look : file.name, storageKey: stored.key, url: stored.url, mimeType: mime,
+        characterId, elementId, shotId: role === "MOTION_REF" || role === "AUDIO_REF" ? shotId : role === "CONTACT_SHEET" ? null : shotId,
+        angle: angles[i] || angles[0] || null, durationSec, meta: { uploaded: true, ...(look ? { look } : {}) },
+      },
     });
     created.push(asset);
+    if (role === "MOTION_REF" && shotId) await db.shot.update({ where: { id: shotId }, data: { motionRefAssetId: asset.id } });
+    if (role === "CHARACTER_SHEET" && characterId) await db.character.update({ where: { id: characterId }, data: { sheetAssetId: asset.id } });
+
+    // Cut a grid into tiles.
+    if (kind === "IMAGE" && cols * rows > 1 && (role === "CONTACT_SHEET" || role === "CHARACTER_SHEET")) {
+      const tiles = await splitGrid(stored.key, cols, rows);
+      for (const [t, buf] of tiles.entries()) {
+        const tk = await putFile(newKey(id, "tiles", "image/png"), buf, "image/png");
+        const base = { projectId: id, kind: "IMAGE" as const, storageKey: tk.key, url: tk.url, mimeType: "image/png", meta: { fromSheet: asset.id, uploaded: true } };
+        if (characterId) {
+          created.push(await db.asset.create({ data: { ...base, role: "CHARACTER_REF", characterId, angle: angles[t] || ANGLES[t] || null } }));
+        } else if (elementId) {
+          created.push(await db.asset.create({ data: { ...base, role: "ELEMENT_REF", elementId, name: `${file.name} ${t + 1}` } }));
+        } else if (sheetShotIds[t]) {
+          const frame = await db.asset.create({ data: { ...base, role: "SHOT_IMAGE", shotId: sheetShotIds[t] } });
+          await db.shot.update({ where: { id: sheetShotIds[t] }, data: { imageAssetId: frame.id, imageStatus: "DONE" } });
+          created.push(frame);
+        }
+      }
+    }
 
     if (kind === "VIDEO" && (role === "VIDEO_REF" || role === "STYLE_REF" || role === "MOODBOARD")) {
       try {
@@ -65,8 +102,8 @@ export const POST = route(async (req: Request, { params }: Params<"id">) => {
     }
   }
 
-  // New style images join the global style lock.
-  const styleImgs = created.filter((a) => a.kind === "IMAGE" && (a.role === "STYLE_REF" || a.role === "MOODBOARD"));
+  // New style images (and style videos, for models that take video references) join the global style lock.
+  const styleImgs = created.filter((a) => (a.kind === "IMAGE" || (a.kind === "VIDEO" && a.role === "STYLE_REF")) && (a.role === "STYLE_REF" || a.role === "MOODBOARD"));
   if (styleImgs.length && form.get("lockStyle") !== "false") {
     const p = await db.project.findUniqueOrThrow({ where: { id } });
     const lock = (p.styleLock as StyleLock) || {};
@@ -74,7 +111,7 @@ export const POST = route(async (req: Request, { params }: Params<"id">) => {
     await db.project.update({ where: { id }, data: { styleLock: { ...lock, referenceAssetIds: refs, enabled: lock.enabled ?? true } } });
   }
 
-  publish(id, { type: "refresh", scope: characterId ? "characters" : "assets" });
+  publish(id, { type: "refresh", scope: characterId || elementId ? "characters" : sheetShotIds.length ? "shots" : "assets" });
   if (styleImgs.length) publish(id, { type: "refresh", scope: "project" });
   return ok(created, 201);
 });

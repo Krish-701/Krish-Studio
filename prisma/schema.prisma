@@ -44,6 +44,22 @@ enum AssetRole {
   SCRIPT
   EXPORT
   MASK
+  /// One image with front / back / three-quarter views (a turnaround / design sheet)
+  CHARACTER_SHEET
+  /// Costume or age variant of a character; meta.look holds the look name
+  WARDROBE_REF
+  /// Reference image of a location / film set or a prop (Element)
+  ELEMENT_REF
+  /// A grid of frames (contact sheet) for a scene, or an uploaded sheet to split into references
+  CONTACT_SHEET
+  /// Reference video for motion / camera / performance
+  MOTION_REF
+  /// Reference audio (rhythm / mood guide for models that accept audio references)
+  AUDIO_REF
+  /// Colour palette swatch image generated from hex colours
+  COLOR_PALETTE
+  /// Editor package (FCPXML / EDL / production log)
+  EXPORT_PACKAGE
 }
 
 enum JobType {
@@ -58,6 +74,17 @@ enum JobType {
   EXPORT_MP4
   EXPORT_PDF
   AGENT_CHECK
+  /// Long-form writing: outline (acts → sequences → scenes), then each sequence into shots
+  WRITE_OUTLINE
+  WRITE_SEQUENCE
+  /// Character turnaround sheet / location plate
+  DESIGN_SHEET
+  /// One grid image of a scene's frames, split into shot frames
+  CONTACT_SHEET
+  /// Several consecutive shots generated in one multi-shot video call
+  MULTISHOT_VIDEO
+  EXTEND_VIDEO
+  EXPORT_PACKAGE
 }
 
 enum JobStatus {
@@ -85,22 +112,38 @@ enum AgentKind {
 }
 
 model Project {
-  id          String   @id @default(cuid())
-  title       String
-  logline     String?
-  stage       Stage    @default(SCRIPT)
-  aspectRatio String   @default("16:9")
-  scriptText  String?
+  id               String   @id @default(cuid())
+  title            String
+  logline          String?
+  stage            Stage    @default(SCRIPT)
+  aspectRatio      String   @default("16:9")
+  /// spot | short | action | music_video | episode | feature | custom
+  format           String   @default("short")
+  /// Target runtime in seconds, from 30s spots up to 3h features (10800).
+  targetRuntimeSec Int      @default(60)
+  resolution       String   @default("1080p")
+  fps              Int      @default(24)
+  language         String   @default("English")
+  /// The user's idea / synopsis the writer expands
+  synopsis         String?
+  /// Writer output: { acts: [{ title, summary, sequences: [...] }] }
+  outline          Json?
+  /// false while the new-film wizard is still open
+  setupDone        Boolean  @default(true)
+  wizardStep       Int      @default(0)
+  scriptText       String?
   /// Global style lock: { enabled, prompt, mood, tone, palette[], negative, referenceAssetIds[] }
-  styleLock   Json     @default("{}")
+  styleLock        Json     @default("{}")
   /// Default models: { image, video, tts, music }
-  defaults    Json     @default("{}")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  defaults         Json     @default("{}")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
+  sequences  Sequence[]
   scenes     Scene[]
   shots      Shot[]
   characters Character[]
+  elements   Element[]
   assets     Asset[]
   jobs       Job[]
   clips      TimelineClip[]
@@ -109,51 +152,93 @@ model Project {
   memory     MemoryEntry[]
 }
 
+/// Acts are numbers on sequences; sequences group scenes (a 3-hour film has ~40-60 of them).
+model Sequence {
+  id                String  @id @default(cuid())
+  projectId         String
+  project           Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  index             Int
+  act               Int     @default(1)
+  title             String
+  summary           String  @default("")
+  color             String  @default("#f59e0b")
+  /// outlined | writing | written
+  status            String  @default("outlined")
+  targetDurationSec Float   @default(60)
+  scenes            Scene[]
+
+  @@index([projectId, index])
+}
+
 model Scene {
-  id        String  @id @default(cuid())
-  projectId String
-  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  index     Int
-  heading   String
-  location  String?
-  timeOfDay String?
-  summary   String?
-  shots     Shot[]
+  id                String    @id @default(cuid())
+  projectId         String
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sequenceId        String?
+  sequence          Sequence? @relation(fields: [sequenceId], references: [id], onDelete: SetNull)
+  index             Int
+  heading           String
+  location          String?
+  /// The film set this scene is drawn from
+  locationId        String?
+  locationEl        Element?  @relation("SceneLocation", fields: [locationId], references: [id], onDelete: SetNull)
+  timeOfDay         String?
+  summary           String?
+  /// Story beats the writer expands into shots
+  beats             Json?
+  targetDurationSec Float?
+  /// outlined | written
+  status            String    @default("written")
+  shots             Shot[]
 
   @@index([projectId, index])
 }
 
 model Shot {
-  id             String    @id @default(cuid())
-  projectId      String
-  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sceneId        String?
-  scene          Scene?    @relation(fields: [sceneId], references: [id], onDelete: SetNull)
-  order          Int
-  title          String
-  description    String    @default("")
-  dialogue       String?
-  speaker        String?
-  shotType       String?   // WIDE, MEDIUM, CLOSE_UP, ...
-  cameraMove     String?   // static, dolly-in, pan-left, ...
-  durationSec    Float     @default(4)
-  prompt         String    @default("")
-  negativePrompt String?
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sceneId          String?
+  scene            Scene?    @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  order            Int
+  title            String
+  description      String    @default("")
+  dialogue         String?
+  speaker          String?
+  shotType         String? // WIDE, MEDIUM, CLOSE_UP, ...
+  cameraMove       String? // static, dolly-in, pan-left, ...
+  durationSec      Float     @default(4)
+  prompt           String    @default("")
+  negativePrompt   String?
   /// Per-shot style override; when set it replaces the project style lock for this shot.
-  styleOverride  Json?
-  imageModel     String?
-  videoModel     String?
-  imageStatus    GenStatus @default(IDLE)
-  videoStatus    GenStatus @default(IDLE)
-  audioStatus    GenStatus @default(IDLE)
-  approved       Boolean   @default(false)
-  imageAssetId   String?
-  videoAssetId   String?
-  notes          String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  styleOverride    Json?
+  imageModel       String?
+  videoModel       String?
+  imageStatus      GenStatus @default(IDLE)
+  videoStatus      GenStatus @default(IDLE)
+  audioStatus      GenStatus @default(IDLE)
+  approved         Boolean   @default(false)
+  /// How each shot will move (motion prompt used for video)
+  motionPrompt     String    @default("")
+  /// auto | frame (start/end keyframes) | reference (character/set/style refs) | text
+  refMode          String    @default("auto")
+  /// cut | continuous (start from the previous shot's last frame) | extend (extend the previous clip)
+  continuity       String    @default("cut")
+  /// Shots sharing a group id are generated together in one multi-shot call
+  multishotGroup   String?
+  motionRefAssetId String?
+  endFrameAssetId  String?
+  /// Colour preset name (natural, moody, vibrant, vintage, ...) or null for the project look
+  colorPreset      String?
+  withSound        Boolean   @default(true)
+  imageAssetId     String?
+  videoAssetId     String?
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   characters ShotCharacter[]
+  elements   ShotElement[]
   assets     Asset[]
   jobs       Job[]
   findings   AgentFinding[]
@@ -162,16 +247,25 @@ model Shot {
 }
 
 model Character {
-  id          String   @id @default(cuid())
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  name        String
-  description String   @default("")
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name         String
+  description  String   @default("")
   /// Locked characters always inject their reference images into every generation they appear in.
-  locked      Boolean  @default(true)
-  voiceId     Int?
-  color       String   @default("#f59e0b")
-  createdAt   DateTime @default(now())
+  locked       Boolean  @default(true)
+  voiceId      Int?
+  color        String   @default("#f59e0b")
+  /// protagonist | antagonist | supporting | extra
+  role         String   @default("supporting")
+  age          String?
+  gender       String?
+  /// Mention handle used in prompts, e.g. "mara" → @mara
+  handle       String?
+  /// Magnific library character id (custom_model_id), created from the reference images
+  providerRef  String?
+  sheetAssetId String?
+  createdAt    DateTime @default(now())
 
   references Asset[]
   shots      ShotCharacter[]
@@ -182,6 +276,8 @@ model Character {
 model ShotCharacter {
   shotId      String
   characterId String
+  /// Wardrobe / age look for this shot (matches an Asset WARDROBE_REF meta.look)
+  look        String?
   shot        Shot      @relation(fields: [shotId], references: [id], onDelete: Cascade)
   character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
 
@@ -189,9 +285,9 @@ model ShotCharacter {
 }
 
 model Asset {
-  id          String    @id @default(cuid())
+  id          String     @id @default(cuid())
   projectId   String
-  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
   kind        AssetKind
   role        AssetRole
   name        String?
@@ -202,13 +298,15 @@ model Asset {
   angle       String?
   characterId String?
   character   Character? @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  elementId   String?
+  element     Element?   @relation(fields: [elementId], references: [id], onDelete: Cascade)
   shotId      String?
   shot        Shot?      @relation(fields: [shotId], references: [id], onDelete: Cascade)
   /// Provider-side identifier (e.g. Magnific creation identifier) so refs aren't re-uploaded.
   providerRef String?
   durationSec Float?
-  meta        Json      @default("{}")
-  createdAt   DateTime  @default(now())
+  meta        Json       @default("{}")
+  createdAt   DateTime   @default(now())
 
   clips TimelineClip[]
 
@@ -257,17 +355,17 @@ model TimelineClip {
 }
 
 model AgentMessage {
-  id        String    @id @default(cuid())
-  projectId String
-  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  agent     AgentKind
-  role      String
-  content   String
-  toolCalls Json?
+  id         String    @id @default(cuid())
+  projectId  String
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agent      AgentKind
+  role       String
+  content    String
+  toolCalls  Json?
   toolCallId String?
   /// Provider reasoning_details for this assistant turn, passed back to the model unmodified.
-  reasoning Json?
-  createdAt DateTime  @default(now())
+  reasoning  Json?
+  createdAt  DateTime  @default(now())
 
   @@index([projectId, createdAt])
 }
@@ -290,24 +388,28 @@ model AgentFinding {
 
 /// Singleton (id = "global"). Holds the OpenAI-compatible endpoint and generation backends.
 model AppSettings {
-  id          String   @id @default("global")
-  llmBaseUrl  String   @default("https://api.openai.com/v1")
-  llmApiKey   String?
-  llmModel    String   @default("gpt-4o")
+  id           String   @id @default("global")
+  llmBaseUrl   String   @default("https://api.openai.com/v1")
+  llmApiKey    String?
+  llmModel     String   @default("gpt-4o")
   /// Optional per-agent model overrides: { DIRECTOR: "...", CONSISTENCY: "...", ... }
-  agentModels Json     @default("{}")
+  agentModels  Json     @default("{}")
   /// Whether sub-agents run automatically after generations finish.
-  autoAgents  Boolean  @default(true)
+  autoAgents   Boolean  @default(true)
   /// Send reasoning: { enabled: true } (OpenRouter) and pass reasoning_details back unmodified.
-  llmReasoning Boolean @default(false)
+  llmReasoning Boolean  @default(false)
   /// Optional model used for image checks when the main model can't see images.
-  visionModel String   @default("")
+  visionModel  String   @default("")
   /// Result of the last model validation: { model, baseUrl, tools, vision, json, reasoning, checkedAt, checks: [...] }
-  llmCaps     Json?
+  llmCaps      Json?
+  /// Model catalog synced from Magnific (video_models_list / images_models_list); falls back to the built-in catalog
+  modelCatalog Json?
+  /// How many generation jobs run at once
+  concurrency  Int      @default(3)
   /// Generation backends, tried in priority order.
   /// [{ id, name, kind: "magnific"|"mcp"|"mock", url, token, enabled, capabilities: [...], toolMap }]
-  mcpServers  Json     @default("[]")
-  updatedAt   DateTime @updatedAt
+  mcpServers   Json     @default("[]")
+  updatedAt    DateTime @updatedAt
 }
 
 /// Shared project memory. Every agent reads it in its system prompt and can add, edit or delete entries.
@@ -329,4 +431,36 @@ model MemoryEntry {
 
   @@unique([projectId, key])
   @@index([projectId, updatedAt])
+}
+
+/// Film sets (locations) and props. Every shot on a set is drawn from the set's reference images.
+model Element {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// location | prop
+  kind        String   @default("location")
+  name        String
+  description String   @default("")
+  handle      String?
+  locked      Boolean  @default(true)
+  color       String   @default("#22d3ee")
+  /// Magnific library id (locations / product)
+  providerRef String?
+  createdAt   DateTime @default(now())
+
+  references Asset[]
+  scenes     Scene[]       @relation("SceneLocation")
+  shots      ShotElement[]
+
+  @@unique([projectId, kind, name])
+}
+
+model ShotElement {
+  shotId    String
+  elementId String
+  shot      Shot    @relation(fields: [shotId], references: [id], onDelete: Cascade)
+  element   Element @relation(fields: [elementId], references: [id], onDelete: Cascade)
+
+  @@id([shotId, elementId])
 }

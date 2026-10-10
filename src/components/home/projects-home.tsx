@@ -61,8 +61,9 @@ export function ProjectsHome() {
               Direct your film with a <span className="text-gradient">live AI crew</span>.
             </h1>
             <p className="mt-5 max-w-2xl text-base text-muted sm:text-lg">
-              Drop in a script and character references. The Director agent breaks it into shots, locks your characters and look,
-              renders every frame and clip through Magnific, and cuts it together with voice, music and sound.
+              From a 30-second ad to a 3-hour feature. Start from an idea or a script; the crew writes it in acts, sequences and scenes,
+              designs your cast and sets, keeps every face and place consistent with references, renders frames and clips through Magnific,
+              and cuts it together with voice, music and sound.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button size="lg" onClick={() => setOpen(true)}>
@@ -153,6 +154,11 @@ export function ProjectsHome() {
 
 function NewProjectDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const router = useRouter();
+  const [quick, setQuick] = React.useState(false);
+  const startWizard = async () => {
+    const p = await api<{ id: string }>("/api/projects", { body: { title: "Untitled film", wizard: true } });
+    router.push(`/projects/${p.id}`);
+  };
   const [title, setTitle] = React.useState("");
   const [logline, setLogline] = React.useState("");
   const [aspect, setAspect] = React.useState("16:9");
@@ -179,7 +185,21 @@ function NewProjectDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="New film" description="Name it, pick a frame, and drop in your script. You can add it later too." className="max-w-xl">
+      <DialogContent title="New film" description="Start from an idea with the guided setup, or bring a finished script." className="max-w-xl">
+        {!quick ? (
+          <div className="grid gap-3 p-5 sm:grid-cols-2">
+            <button onClick={startWizard} className="rounded-2xl border border-accent/40 bg-accent/5 p-4 text-left transition hover:border-accent">
+              <Sparkles className="mb-2 size-5 text-accent" />
+              <div className="font-display font-semibold">Start from an idea</div>
+              <div className="mt-1 text-xs text-muted">Pick a format from a 30-second ad to a 3-hour feature, describe the story, choose a look and cast, and the AI writes every scene and shot.</div>
+            </button>
+            <button onClick={() => setQuick(true)} className="rounded-2xl border border-line p-4 text-left transition hover:border-line-2">
+              <FileText className="mb-2 size-5 text-muted" />
+              <div className="font-display font-semibold">I have a script</div>
+              <div className="mt-1 text-xs text-muted">Upload a PDF, Final Draft, Fountain or text script and it is broken into scenes, shots, cast and sets.</div>
+            </button>
+          </div>
+        ) : (
         <div className="space-y-4 p-5">
           <div className="space-y-1.5">
             <Label>Title</Label>
@@ -211,12 +231,13 @@ function NewProjectDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
             {!file && <Textarea rows={4} value={text} onChange={(e) => setText(e.target.value)} placeholder="…or paste the script text here" />}
           </div>
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => setQuick(false)}>Back</Button>
             <Button onClick={create} disabled={busy}>
               <Clapperboard /> {busy ? "Creating…" : "Create film"}
             </Button>
           </div>
         </div>
+        )}
       </DialogContent>
     </Dialog>
   );

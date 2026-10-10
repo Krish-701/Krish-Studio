@@ -2,7 +2,8 @@ import type { McpServerConfig } from "../settings";
 import { callTool, collect, field, fields, findUrls, McpToolError } from "../mcp/client";
 import { getFile } from "../storage";
 import { sleep } from "../utils";
-import { snap, snapAspect, videoModel } from "./catalog";
+import { parseToolText } from "../mcp/toon";
+import { fromMagnific, snap, snapAspect, videoModel, type ModelInfo } from "./catalog";
 import type { GenContext, GenerationProvider, GenResult, RefImage } from "./types";
 
 /**
@@ -35,7 +36,21 @@ function mediaUrl(result: unknown, kind: "image" | "video" | "audio") {
   return direct[0] || findUrls(result, kind).find((u) => !/original\./.test(u)) || null;
 }
 
-export function magnificProvider(cfg: McpServerConfig): GenerationProvider {
+export interface MagnificProvider extends GenerationProvider {
+  /** Registers a character / film set / prop as a Magnific library asset (1–6 images); returns its id for references. */
+  createLibrary(input: { type: "character" | "product" | "locations"; name: string; description?: string; images: RefImage[] }, ctx: GenContext): Promise<string>;
+}
+
+/** Pulls the live image + video model catalogs (reference types, limits, durations, multi-shot). */
+export async function syncMagnificCatalog(cfg: McpServerConfig): Promise<{ image: ModelInfo[]; video: ModelInfo[] }> {
+  const list = (v: unknown) => ((v as { models?: unknown[] })?.models ?? []) as Record<string, unknown>[];
+  const video = list(parseToolText(await callTool(cfg, "video_models_list", {}, 60_000))).map((m) => fromMagnific(m, "video"));
+  const image = list(parseToolText(await callTool(cfg, "images_models_list", {}, 60_000))).map((m) => fromMagnific(m, "image"));
+  if (!video.length && !image.length) throw new Error("Magnific returned an empty model catalog");
+  return { image, video };
+}
+
+export function magnificProvider(cfg: McpServerConfig): MagnificProvider {
   let cachedVoice: number | null = null;
 
   async function ensureRef(ref: RefImage, ctx: GenContext): Promise<string> {
@@ -44,7 +59,7 @@ export function magnificProvider(cfg: McpServerConfig): GenerationProvider {
     // 1) Direct upload of our stored bytes (works even when the app isn't publicly reachable).
     if (ref.key) {
       try {
-        const mime = ref.mime && /^(image|video|audio)\//.test(ref.mime) ? ref.mime : "image/png";
+        const mime = ref.mime && /^(image|video|audio)\//.test(ref.mime) ? ref.mime : ref.media === "video" ? "video/mp4" : ref.media === "audio" ? "audio/mpeg" : "image/png";
         const req = await callTool(cfg, "creations_request_upload", { mimeType: mime });
         const putUrl = field(req, ["uploadUrl", "putUrl", "presignedUrl", "signedUrl", "url"]) || findUrls(req)[0];
         const pathVal = field(req, ["path", "tempPath", "key"]);
@@ -52,7 +67,8 @@ export function magnificProvider(cfg: McpServerConfig): GenerationProvider {
         const body = await getFile(ref.key);
         const put = await fetch(putUrl, { method: "PUT", body: new Uint8Array(body), headers: { "Content-Type": mime } });
         if (!put.ok) throw new Error(`PUT ${put.status}`);
-        const fin = await callTool(cfg, "creations_finalize_upload", { path: pathVal, fileName: ref.label ? `${ref.label}.png` : undefined, visible: false });
+        const ext = mime.split("/")[1]?.replace("jpeg", "jpg").replace("mpeg", "mp3") || "png";
+        const fin = await callTool(cfg, "creations_finalize_upload", { path: pathVal, fileName: ref.label ? `${ref.label.replace(/[^\w\- ]+/g, "")}.${ext}` : undefined, visible: false });
         id = identifiersOf(fin)[0];
       } catch (e) {
         console.warn("[magnific] direct upload failed, trying URL import:", (e as Error).message);
@@ -103,14 +119,26 @@ export function magnificProvider(cfg: McpServerConfig): GenerationProvider {
   return {
     id: cfg.id,
     name: cfg.name,
+
+    async createLibrary(input, ctx) {
+      const images = [];
+      for (const r of input.images.slice(0, 6)) images.push({ creationIdentifier: await ensureRef(r, ctx) });
+      const name = input.name.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 40) + "_" + Date.now().toString(36);
+      const res = await callTool(cfg, "library_create", { type: input.type, name, images, ...(input.description ? { description: input.description.slice(0, 1000) } : {}) });
+      const id = field(res, ["id", "libraryId", "customModelId"]);
+      if (!id) throw new McpToolError("Magnific library_create returned no id", "library_create");
+      return String(id);
+    },
     supports: (cap) => cfg.capabilities.includes(cap),
     unavailable: () => (!cfg.url ? "No URL configured" : !cfg.token ? "No access token (add it in Settings)" : null),
 
     async image(req, ctx) {
-      await ctx.onProgress(5, "Uploading character & style references");
+      await ctx.onProgress(5, "Uploading character, set & style references");
       const refs = [];
       for (const r of req.references.slice(0, 12)) {
-        refs.push({ type: r.type === "style" ? "style" : "image", identifier: await ensureRef(r, ctx) });
+        // Library assets (characters / sets / props registered in Magnific) are passed by id; anything else is a photo.
+        if (r.libraryId && (r.type === "character" || r.type === "product" || r.type === "locations")) refs.push({ type: r.type, identifier: r.libraryId });
+        else refs.push({ type: r.type === "style" || r.type === "color" ? "style" : "image", identifier: await ensureRef(r, ctx) });
       }
       await ctx.onProgress(15, `Submitting to Magnific (${req.model || "auto"})`);
       const prompt = req.negativePrompt ? `${req.prompt}\n\nAvoid: ${req.negativePrompt}` : req.prompt;
@@ -127,29 +155,65 @@ export function magnificProvider(cfg: McpServerConfig): GenerationProvider {
 
     async video(req, ctx) {
       const m = videoModel(req.model);
-      const args: Record<string, unknown> = { prompt: req.prompt };
+      const args: Record<string, unknown> = {};
       if (req.model && req.model !== "auto") {
         args.slug = req.model;
         args.duration = snap(req.durationSec, m?.durations);
-        if (m?.resolutions) args.resolution = m.defaultResolution || m.resolutions[0];
+        if (m?.resolutions) args.resolution = req.resolution && m.resolutions.includes(req.resolution) ? req.resolution : m.defaultResolution || m.resolutions[0];
         args.aspectRatio = snapAspect(req.aspectRatio, m?.aspectRatios);
       } else {
         args.duration = snap(req.durationSec, [5, 10]);
         args.aspectRatio = req.aspectRatio;
       }
-      await ctx.onProgress(5, "Uploading keyframe");
+      if (req.multiPrompt?.length && m?.multishot) {
+        args.multi_prompt = req.multiPrompt.slice(0, m.multishot.limit).map((p, i) => ({
+          index: i + 1,
+          prompt: p.prompt,
+          duration: Math.min(m.multishot!.max, Math.max(m.multishot!.min, Math.round(p.durationSec))),
+          ...(p.cameraMotion && m.cameraMotions?.includes(p.cameraMotion) ? { cameraMotion: p.cameraMotion } : {}),
+        }));
+        args.duration = snap((args.multi_prompt as { duration: number }[]).reduce((a, b) => a + b.duration, 0), m.durations);
+      } else args.prompt = req.prompt.slice(0, m?.promptMax ?? 10000);
+
+      await ctx.onProgress(5, "Uploading keyframes & references");
       if (req.startFrame) {
         args.keyframes = { start: { type: "image", url: await ensureRef(req.startFrame, ctx) } };
-      } else if (req.references?.length && (m?.refs ?? true)) {
+        if (req.endFrame && m?.endFrame) (args.keyframes as Record<string, unknown>).end = { type: "image", url: await ensureRef(req.endFrame, ctx) };
+      }
+      if (req.references?.length && !(req.startFrame && m?.keyframesExclusive)) {
         const refs = [];
-        for (const r of req.references.slice(0, 9)) refs.push({ type: r.type === "style" ? "style" : "character", url: await ensureRef(r, ctx) });
+        for (const r of req.references) {
+          if (r.libraryId && (r.type === "character" || r.type === "product" || r.type === "style")) refs.push({ type: r.type, custom_model_id: r.libraryId, name: r.label ?? r.type });
+          else refs.push({ type: r.type, url: await ensureRef(r, ctx) });
+        }
         args.references = refs;
       }
-      if (req.cameraMotion && m?.cameraMotion) args.cameraMotion = req.cameraMotion;
+      if (req.cameraMotion && m?.cameraMotions?.includes(req.cameraMotion) && !args.multi_prompt) args.cameraMotion = req.cameraMotion;
       if (m?.sound) args.withSoundEffects = !!req.withSound;
       await ctx.onProgress(15, `Submitting to Magnific (${m?.name || "auto"})`);
-      const res = await callTool(cfg, "video_generate", args);
-      return waitFor(identifiersOf(res), "video", ctx, 240, "Generating clip");
+      let res;
+      try {
+        res = await callTool(cfg, "video_generate", args);
+      } catch (e) {
+        // Colour / effect references are the newest reference types; retry without them before giving up.
+        const refs = (args.references as { type: string }[] | undefined) ?? [];
+        if (!refs.some((r) => r.type === "color" || r.type === "effect")) throw e;
+        args.references = refs.filter((r) => r.type !== "color" && r.type !== "effect");
+        res = await callTool(cfg, "video_generate", args);
+      }
+      return waitFor(identifiersOf(res), "video", ctx, m?.expectedSec ?? 240, req.multiPrompt?.length ? "Generating scene" : "Generating clip");
+    },
+
+    async extend(req, ctx) {
+      const id = await ensureRef(req.video, ctx);
+      await ctx.onProgress(15, "Submitting extension");
+      const res = await callTool(cfg, "video_extend", {
+        creationIdentifier: id,
+        durationSeconds: Math.round(Math.min(15, Math.max(1, req.durationSec))),
+        ...(req.prompt ? { prompt: req.prompt.slice(0, 2000) } : {}),
+        withAudio: !!req.withSound,
+      });
+      return waitFor(identifiersOf(res), "video", ctx, 240, "Extending clip");
     },
 
     async tts(req, ctx) {

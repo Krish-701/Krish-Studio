@@ -9,7 +9,9 @@ import { Input, Label, NativeSelect, Textarea } from "@/components/ui/input";
 import { Switch, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/misc";
 import { Badge } from "@/components/ui/badge";
 import { api, fetcher } from "@/lib/client";
-import { CAMERA_MOTIONS, IMAGE_MODELS, SHOT_TYPES, VIDEO_MODELS } from "@/lib/generation/catalog";
+import { CAMERA_MOTIONS, SHOT_TYPES } from "@/lib/generation/catalog";
+import { MotionPanel, CLIP_MODES } from "./shot-motion";
+import { useModels } from "./use-models";
 import type { StyleLock } from "@/lib/prompt-builder";
 import { cn } from "@/lib/utils";
 import { AGENTS } from "@/lib/agents/definitions";
@@ -49,7 +51,11 @@ function ShotEditor({ shotId }: { shotId: string }) {
   const [f, setF] = React.useState(() => ({
     title: shot.title, description: shot.description, prompt: shot.prompt, negativePrompt: shot.negativePrompt ?? "", dialogue: shot.dialogue ?? "", speaker: shot.speaker ?? "",
     shotType: shot.shotType ?? "", cameraMove: shot.cameraMove ?? "static", durationSec: shot.durationSec, imageModel: shot.imageModel ?? "", videoModel: shot.videoModel ?? "", characterIds: shot.characterIds,
+    motionPrompt: shot.motionPrompt ?? "", refMode: shot.refMode ?? "auto", continuity: shot.continuity ?? "cut", colorPreset: shot.colorPreset ?? "",
+    withSound: shot.withSound, elementIds: shot.elementIds, looks: shot.looks as Record<string, string>,
   }));
+  const { image: IMAGE_MODELS, video: VIDEO_MODELS } = useModels();
+  const [clipMode, setClipMode] = React.useState(shot.refMode ?? "auto");
   const [override, setOverride] = React.useState<StyleLock | null>((shot.styleOverride as StyleLock) ?? null);
   const [dirty, setDirty] = React.useState(false);
   const [view, setView] = React.useState<"image" | "video">(shot.videoUrl ? "video" : "image");
@@ -65,7 +71,7 @@ function ShotEditor({ shotId }: { shotId: string }) {
     setDirty(true);
   };
   const save = async () => {
-    await api(`/api/shots/${shotId}`, { method: "PATCH", body: { ...f, styleOverride: override && Object.keys(override).length ? override : null, imageModel: f.imageModel || null, videoModel: f.videoModel || null, shotType: f.shotType || null, dialogue: f.dialogue || null, speaker: f.speaker || null } });
+    await api(`/api/shots/${shotId}`, { method: "PATCH", body: { ...f, styleOverride: override && Object.keys(override).length ? override : null, imageModel: f.imageModel || null, videoModel: f.videoModel || null, shotType: f.shotType || null, dialogue: f.dialogue || null, speaker: f.speaker || null, motionPrompt: f.motionPrompt || null, colorPreset: f.colorPreset || null } });
     setDirty(false);
   };
   const run = async (body: Record<string, unknown>, msg: string) => {
@@ -79,6 +85,7 @@ function ShotEditor({ shotId }: { shotId: string }) {
   const meta = shot.imageMeta as { prompt?: string; provider?: string; model?: string; characters?: string[]; refs?: number; consistencyScore?: number; fallbackFrom?: string[] } | null;
   const findings = state!.findings.filter((x) => x.shotId === shotId);
   const [ar1, ar2] = state!.project.aspectRatio.split(":").map(Number);
+  const idx = state!.shots.findIndex((s) => s.id === shotId);
   const vModel = VIDEO_MODELS.find((m) => m.slug === (f.videoModel || (state!.project.defaults as Record<string, string>)?.video));
 
   return (
@@ -128,8 +135,16 @@ function ShotEditor({ shotId }: { shotId: string }) {
 
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => run({ kind: "image" }, "Frame queued")}><Sparkles /> {shot.imageUrl ? "Regenerate frame" : "Generate frame"}</Button>
-          <Button variant="secondary" onClick={() => run({ kind: "video", mode: shot.imageUrl ? "i2v" : "t2v" }, "Clip queued")}><Film /> {shot.imageUrl ? "Animate frame" : "Text to video"}</Button>
-          {shot.imageUrl && <Button variant="secondary" onClick={() => run({ kind: "video", mode: "t2v" }, "Clip queued")} title="Generate from text + character refs, ignoring the frame"><Film /> T2V</Button>}
+          <div className="flex overflow-hidden rounded-lg border border-line-2">
+            <select value={clipMode} onChange={(e) => setClipMode(e.target.value)} className="bg-panel-3 px-2 text-xs text-fg outline-none" title="How to make the clip">
+              {CLIP_MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              {idx > 0 && <option value="extend">Extend previous clip</option>}
+            </select>
+            <Button variant="secondary" className="rounded-none border-0" onClick={async () => {
+              if (clipMode === "extend") { await api(`/api/shots/${shotId}`, { method: "PATCH", body: { continuity: "extend" } }); return run({ kind: "video" }, "Extending the previous clip"); }
+              return run({ kind: "video", mode: clipMode }, "Clip queued");
+            }}><Film /> {shot.videoUrl ? "Regenerate clip" : "Make clip"}</Button>
+          </div>
           {shot.imageAssetId && <Button variant="ghost" onClick={() => api(`/api/projects/${projectId}/generate`, { body: { kind: "upscale", shotId, assetId: shot.imageAssetId, scale: "2x" } }).then(() => toast.success("Upscale queued"))}><Maximize2 /> Upscale</Button>}
           {shot.imageAssetId && <Button variant="ghost" onClick={() => { setView("image"); setMasking(true); }}><Paintbrush /> Inpaint</Button>}
           {f.dialogue && <Button variant="ghost" onClick={() => run({ kind: "voice" }, "Voiceover queued")}><Mic /> Voice</Button>}
@@ -204,6 +219,7 @@ function ShotEditor({ shotId }: { shotId: string }) {
         <Tabs defaultValue="shot">
           <TabsList className="-mx-2 mb-4">
             <TabsTrigger value="shot">Shot</TabsTrigger>
+            <TabsTrigger value="motion">Motion & refs</TabsTrigger>
             <TabsTrigger value="prompt">Prompt</TabsTrigger>
             <TabsTrigger value="style">Style override {override && Object.keys(override).length ? <span className="size-1.5 rounded-full bg-accent" /> : null}</TabsTrigger>
           </TabsList>
@@ -249,6 +265,9 @@ function ShotEditor({ shotId }: { shotId: string }) {
               <div className="space-y-1.5"><Label>Speaker</Label><Input value={f.speaker} onChange={(e) => set({ speaker: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Dialogue</Label><Input value={f.dialogue} onChange={(e) => set({ dialogue: e.target.value })} /></div>
             </div>
+          </TabsContent>
+          <TabsContent value="motion">
+            <MotionPanel shot={shot} f={f} set={set} videoModel={f.videoModel || (state!.project.defaults as Record<string, string>)?.video || "bytedance-seedance-pro-2.5"} />
           </TabsContent>
           <TabsContent value="prompt" className="space-y-3">
             <div className="space-y-1.5">

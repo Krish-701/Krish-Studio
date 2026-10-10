@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { ok, route, type Params } from "@/lib/api";
 import { publish } from "@/lib/events";
+import { handleOf } from "@/lib/script/writer";
 
 const PALETTE = ["#f59e0b", "#22d3ee", "#a78bfa", "#f472b6", "#34d399", "#fb7185", "#60a5fa", "#facc15"];
 
@@ -9,7 +10,10 @@ export const POST = route(async (req: Request, { params }: Params<"id">) => {
   const b = await req.json();
   const count = await db.character.count({ where: { projectId: id } });
   const c = await db.character.create({
-    data: { projectId: id, name: String(b.name || "New character").trim(), description: b.description ?? "", color: PALETTE[count % PALETTE.length] },
+    data: {
+      projectId: id, name: String(b.name || "New character").trim(), description: b.description ?? "", color: PALETTE[count % PALETTE.length],
+      role: b.role ?? "supporting", age: b.age ?? null, gender: b.gender ?? null, handle: handleOf(String(b.name || "character")),
+    },
   });
   publish(id, { type: "refresh", scope: "characters" });
   return ok(c, 201);

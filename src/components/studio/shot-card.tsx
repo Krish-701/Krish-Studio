@@ -28,7 +28,7 @@ export function ShotCard({ shot, selected, onSelect, selecting }: { shot: Shot; 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: shot.id });
   const [hover, setHover] = React.useState(false);
   const imgJob = state ? latestJob(state.jobs, shot.id, ["IMAGE", "UPSCALE", "INPAINT"]) : undefined;
-  const vidJob = state ? latestJob(state.jobs, shot.id, ["VIDEO"]) : undefined;
+  const vidJob = state ? latestJob(state.jobs, shot.id, ["VIDEO", "EXTEND_VIDEO"]) : undefined;
   const busyJob = [imgJob, vidJob].find((j) => j && (j.status === "RUNNING" || j.status === "QUEUED"));
   const failedJob = [imgJob, vidJob].find((j) => j?.status === "FAILED");
   const findings = state?.findings.filter((f) => f.shotId === shot.id && f.severity !== "info") ?? [];

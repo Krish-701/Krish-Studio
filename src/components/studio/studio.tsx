@@ -17,10 +17,11 @@ import { StoryboardView } from "./storyboard-view";
 import { TimelineView } from "./timeline-view";
 import { ExportView } from "./export-view";
 import { ShotDrawer } from "./shot-drawer";
+import { FilmWizard, runtimeLabel } from "./film-wizard";
 
 const NAV: { view: View; label: string; icon: React.ElementType }[] = [
   { view: "script", label: "Script", icon: FileText },
-  { view: "characters", label: "Characters", icon: Users },
+  { view: "characters", label: "Cast & sets", icon: Users },
   { view: "style", label: "Style & refs", icon: Palette },
   { view: "storyboard", label: "Storyboard", icon: LayoutGrid },
   { view: "timeline", label: "Timeline", icon: Film },
@@ -58,7 +59,7 @@ function Shell() {
         <Brand compact />
         <div className="min-w-0">
           <TitleEditor projectId={projectId} title={state.project.title} />
-          <div className="truncate text-[10px] uppercase tracking-widest text-dim">{state.project.aspectRatio} · {state.project.stage.toLowerCase()}</div>
+          <div className="truncate text-[10px] uppercase tracking-widest text-dim">{state.project.aspectRatio} · {runtimeLabel(state.project.targetRuntimeSec)} · {state.project.stage.toLowerCase()}</div>
         </div>
         <div className="mx-auto hidden overflow-x-auto sm:block">
           <Pipeline />
@@ -105,12 +106,18 @@ function Shell() {
         </nav>
 
         <main className="min-w-0 flex-1 overflow-y-auto pb-20 md:pb-0">
-          {view === "script" && <ScriptView />}
-          {view === "characters" && <CharactersView />}
-          {view === "style" && <StyleView />}
-          {view === "storyboard" && <StoryboardView />}
-          {view === "timeline" && <TimelineView />}
-          {view === "export" && <ExportView />}
+          {!state.project.setupDone ? (
+            <FilmWizard />
+          ) : (
+            <>
+              {view === "script" && <ScriptView />}
+              {view === "characters" && <CharactersView />}
+              {view === "style" && <StyleView />}
+              {view === "storyboard" && <StoryboardView />}
+              {view === "timeline" && <TimelineView />}
+              {view === "export" && <ExportView />}
+            </>
+          )}
         </main>
 
         {panelOpen && (

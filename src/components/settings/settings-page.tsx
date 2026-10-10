@@ -289,6 +289,8 @@ export function SettingsPage() {
           </div>
         </Section>
 
+        <ModelsSection />
+
         <div className="flex justify-between">
           <Button variant="ghost" asChild>
             <Link href="/"><ArrowLeft /> Back to films</Link>
@@ -360,4 +362,57 @@ function CapsReport({ caps, current }: { caps: LlmCaps; current: string }) {
       </ul>
     </div>
   );
+}
+
+/** Model catalog: what each image/video model accepts as references, synced live from Magnific. */
+function ModelsSection() {
+  const { data, mutate } = useSWR<{ image: ModelInfoLite[]; video: ModelInfoLite[]; synced: boolean; syncedAt: string | null }>("/api/models", fetcher);
+  const [busy, setBusy] = React.useState(false);
+  const sync = async () => {
+    setBusy(true);
+    try {
+      const r = await api<{ image: number; video: number }>("/api/models", { method: "POST" });
+      toast.success(`Synced ${r.video} video and ${r.image} image models`);
+      mutate();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const row = (m: ModelInfoLite) => (
+    <div key={m.slug} className="flex flex-wrap items-center gap-2 border-b border-line py-1.5 text-xs last:border-0">
+      <span className="w-48 truncate font-medium">{m.name}</span>
+      <span className="flex flex-1 flex-wrap gap-1">
+        {Object.entries(m.refLimits).map(([k, v]) => <Badge key={k}>{k} {v}</Badge>)}
+        {m.multishot && <Badge tone="accent">multi-shot {m.multishot.limit}</Badge>}
+        {m.endFrame && <Badge>end frame</Badge>}
+        {m.keyframesExclusive && <Badge tone="warn" title="Frames and references can't be combined; the planner picks one">frame or refs</Badge>}
+      </span>
+      {m.durations && <span className="text-dim">{m.durations[0]}–{m.durations[m.durations.length - 1]}s</span>}
+    </div>
+  );
+  return (
+    <Section
+      title={<span className="flex items-center gap-2"><Cpu className="size-4 text-accent" /> Models & references</span>}
+      actions={<Button size="sm" variant="secondary" onClick={sync} disabled={busy}><Zap /> {busy ? "Syncing…" : "Sync from Magnific"}</Button>}
+    >
+      <p className="mb-3 text-xs text-muted">
+        What each model accepts as references (images, videos, audio, characters, style, colour). Every generation picks the best references the chosen model can take.
+        {data?.syncedAt ? ` Synced ${new Date(data.syncedAt).toLocaleString()}.` : " Showing the built-in list; sync to pick up new models."}
+      </p>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div><Label>Video</Label><div className="mt-1">{data?.video.map(row)}</div></div>
+        <div><Label>Image</Label><div className="mt-1">{data?.image.map(row)}</div></div>
+      </div>
+    </Section>
+  );
+}
+
+interface ModelInfoLite {
+  slug: string;
+  name: string;
+  refLimits: Record<string, number>;
+  durations?: number[];
+  multishot?: { limit: number };
+  endFrame?: boolean;
+  keyframesExclusive?: boolean;
 }

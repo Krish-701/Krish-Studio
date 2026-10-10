@@ -47,10 +47,13 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
     impl: (_, c) => svc.projectOverview(c.projectId),
   },
   list_shots: {
-    schema: S("List shots in storyboard order with prompts and statuses.", { scene: num("Optional 1-based scene index to filter") }),
+    schema: S("List shots in storyboard order with prompts and statuses. On long films always filter by scene or sequence.", {
+      scene: num("Optional 1-based scene index to filter"), sequence: num("Optional 1-based sequence index to filter"),
+    }),
     impl: async (a, c) => {
       const shots = await db.shot.findMany({
-        where: { projectId: c.projectId, ...(a.scene ? { scene: { index: a.scene - 1 } } : {}) },
+        where: { projectId: c.projectId, ...(a.scene ? { scene: { index: a.scene - 1 } } : a.sequence ? { scene: { sequence: { index: a.sequence - 1 } } } : {}) },
+        take: 300,
         orderBy: { order: "asc" },
         include: { characters: { include: { character: { select: { name: true } } } }, scene: { select: { index: true, heading: true } } },
       });
@@ -59,6 +62,7 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
         description: s.description.slice(0, 300), prompt: s.prompt.slice(0, 400), shotType: s.shotType, cameraMove: s.cameraMove, durationSec: s.durationSec,
         dialogue: s.dialogue, speaker: s.speaker, characters: s.characters.map((x) => x.character.name),
         image: s.imageStatus, video: s.videoStatus, approved: s.approved, imageModel: s.imageModel, videoModel: s.videoModel,
+        motion: s.motionPrompt?.slice(0, 200) ?? null, refMode: s.refMode, continuity: s.continuity,
       }));
     },
   },
@@ -79,6 +83,10 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
         cameraMove: str("static|pushIn|pullOut|panLeft|panRight|tiltUp|tiltDown|truckLeft|truckRight|craneUp|craneDown|orbitLeft|orbitRight|handheld"),
         durationSec: num("2-15"), dialogue: str(""), speaker: str(""), imageModel: str("image model slug"), videoModel: str("video model slug"),
         characters: strArr("Names of characters in frame (replaces the list)"),
+        motionPrompt: str("How the shot moves: action and camera, for the video model"),
+        refMode: str("auto | frame (animate the storyboard frame) | reference (identity references, frame as a reference) | text"),
+        continuity: str("cut | continuous (starts from the previous shot's last frame) | extend (continues the previous clip)"),
+        colorPreset: str("Colour grade id: natural, moody, vibrant, vintage, teal-orange, bleach, golden, noir"),
         styleOverride: { type: "object", description: "Per-shot style override (same fields as set_style_lock), or {} to clear" },
       },
       ["shot"],
@@ -87,7 +95,7 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
       const id = await resolveShot(c.projectId, a.shot);
       const { shot: _s, characters, ...rest } = a;
       void _s;
-      const allowed = ["title", "description", "prompt", "negativePrompt", "shotType", "cameraMove", "durationSec", "dialogue", "speaker", "imageModel", "videoModel", "styleOverride"];
+      const allowed = ["title", "description", "prompt", "negativePrompt", "shotType", "cameraMove", "durationSec", "dialogue", "speaker", "imageModel", "videoModel", "styleOverride", "motionPrompt", "refMode", "continuity", "colorPreset"];
       const data = Object.fromEntries(Object.entries(rest).filter(([k]) => allowed.includes(k)));
       await db.shot.update({ where: { id }, data });
       if (characters) await svc.setShotCharacters(c.projectId, id, characters);
@@ -130,12 +138,72 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
   },
   generate_videos: {
     schema: S("Queue video clip generation for shots.", {
-      shots: strArr("Shot ids or numbers. Omit for every shot without a clip."), mode: str("i2v (from approved frame, default) or t2v"), model: str("Optional video model slug"),
+      shots: strArr("Shot ids or numbers. Omit for every shot without a clip."),
+      mode: str("auto (default: picks frame or reference mode per model), frame, reference or text"), model: str("Optional video model slug"),
     }),
     impl: async (a, c) => {
       const ids = await shotIdsFromRefs(c.projectId, a.shots);
-      const jobs = await svc.queueVideos(c.projectId, ids ?? "missing", a.mode === "t2v" ? "t2v" : "i2v", { model: a.model });
+      const jobs = await svc.queueVideos(c.projectId, ids ?? "missing", a.mode === "i2v" ? "frame" : a.mode === "t2v" ? "text" : a.mode, { model: a.model });
       return { queued: jobs.length };
+    },
+  },
+  write_film: {
+    schema: S("Write the film from the synopsis: acts and sequences, then scenes and shots for each sequence. Replaces the current storyboard.", {
+      outlineOnly: { type: "boolean", description: "Only write the outline (acts and sequences) so the user can review it first" },
+    }),
+    impl: async (a, c) => ({ jobId: (await svc.writeFilm(c.projectId, !a.outlineOnly)).id }),
+  },
+  write_sequences: {
+    schema: S("Write scenes and shots for sequences (default: every sequence not yet written).", { sequences: { type: "array", items: { type: "number" }, description: "1-based sequence numbers" } }),
+    impl: async (a, c) => {
+      const seqs = await db.sequence.findMany({ where: { projectId: c.projectId }, orderBy: { index: "asc" } });
+      const ids = a.sequences?.length ? a.sequences.map((n: number) => seqs[n - 1]?.id).filter(Boolean) : undefined;
+      return { queued: (await svc.writeSequences(c.projectId, ids)).length };
+    },
+  },
+  design_sheet: {
+    schema: S("Generate an AI design sheet: a character turnaround (front, three-quarter, side, back) cut into reference angles, a named wardrobe look, or a film set / prop plate.", {
+      character: str("Character name"), set: str("Film set or prop name"), kind: str("turnaround | wardrobe | plate"), look: str("Wardrobe look name"), lookDescription: str("What they wear in this look"),
+    }),
+    impl: async (a, c) => {
+      const ch = a.character ? await db.character.findFirst({ where: { projectId: c.projectId, name: { equals: a.character, mode: "insensitive" } } }) : null;
+      const el = a.set ? await db.element.findFirst({ where: { projectId: c.projectId, name: { equals: a.set, mode: "insensitive" } } }) : null;
+      if (!ch && !el) throw new Error("Unknown character or set. Use get_project_overview for names.");
+      const job = await svc.queueDesignSheet(c.projectId, { characterId: ch?.id, elementId: el?.id, kind: a.kind || (ch ? "turnaround" : "plate"), look: a.look, lookDescription: a.lookDescription });
+      return { jobId: job.id };
+    },
+  },
+  create_set: {
+    schema: S("Add a film set (location) or prop so every shot that uses it gets its reference images.", { name: str(""), kind: str("location | prop"), description: str("Visual description") }, ["name"]),
+    impl: async (a, c) => {
+      const { handleOf } = await import("../script/writer");
+      const el = await db.element.upsert({
+        where: { projectId_kind_name: { projectId: c.projectId, kind: a.kind === "prop" ? "prop" : "location", name: a.name } },
+        create: { projectId: c.projectId, kind: a.kind === "prop" ? "prop" : "location", name: a.name, description: a.description ?? "", handle: handleOf(a.name) },
+        update: { description: a.description ?? undefined },
+      });
+      publish(c.projectId, { type: "refresh", scope: "characters" });
+      return { id: el.id };
+    },
+  },
+  generate_contact_sheets: {
+    schema: S("Draw storyboard frames scene by scene as contact sheets (up to 9 shots in one image, then cut into frames). Cheaper and more consistent than single frames.", {
+      shots: strArr("Shot ids or numbers"), sequence: num("1-based sequence number"), all: { type: "boolean", description: "Redraw frames that already exist" },
+    }),
+    impl: async (a, c) => {
+      const ids = await shotIdsFromRefs(c.projectId, a.shots);
+      const seq = a.sequence ? await db.sequence.findFirst({ where: { projectId: c.projectId, index: a.sequence - 1 } }) : null;
+      return { queued: (await svc.queueContactSheets(c.projectId, { shotIds: ids, sequenceId: seq?.id, missing: a.all ? undefined : "image" })).length };
+    },
+  },
+  generate_multishot: {
+    schema: S("Generate scene clips with multi-shot models: consecutive shots of a scene in one call, so faces, light and set match across cuts.", {
+      shots: strArr("Shot ids or numbers"), sequence: num("1-based sequence number"), model: str("Multi-shot video model slug (default Seedance 2.5)"),
+    }),
+    impl: async (a, c) => {
+      const ids = await shotIdsFromRefs(c.projectId, a.shots);
+      const seq = a.sequence ? await db.sequence.findFirst({ where: { projectId: c.projectId, index: a.sequence - 1 } }) : null;
+      return { queued: (await svc.queueMultishot(c.projectId, { shotIds: ids, sequenceId: seq?.id, missing: ids ? undefined : "video", model: a.model })).length };
     },
   },
   get_progress: {

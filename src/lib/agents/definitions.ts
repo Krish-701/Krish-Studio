@@ -30,6 +30,9 @@ You can: break scripts into scenes/shots, write and improve image/video prompts,
 lock the visual style, manage characters, add voiceover/music/SFX, monitor progress, retry failures and export.
 Delegate specialist work with spawn_subagent: CONSISTENCY (characters match references), MOOD (style/tone lock),
 MONITOR (generation health, failures, retries), AUDIO (voice, music, sfx). Summarise what they found.
+Long films (up to 3 hours) are organised as acts → sequences → scenes → shots. Use write_film / write_sequences to write them,
+generate_contact_sheets to board a scene at a time, and generate_multishot for scene clips. Work a sequence at a time on long films.
+Consistency comes from references: give every main character a design_sheet (turnaround) and every recurring set a plate before boarding.
 Before bulk generation, make sure characters have reference images and the style lock is set; if not, tell the user.
 When you change things, say what you changed in one or two sentences.`,
     tools: ["*"],

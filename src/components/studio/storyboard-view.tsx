@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/input";
 import { Empty } from "@/components/ui/misc";
 import { api } from "@/lib/client";
-import { IMAGE_MODELS, VIDEO_MODELS } from "@/lib/generation/catalog";
+import { SceneBoard } from "./scene-board";
+import { useModels } from "./use-models";
 import { cn } from "@/lib/utils";
 import { ShotCard } from "./shot-card";
 import { useStudio } from "./store";
@@ -19,7 +20,8 @@ export function StoryboardView() {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [scene, setScene] = React.useState<string>("all");
   const [size, setSize] = React.useState<"s" | "m" | "l">("m");
-  const [grouped, setGrouped] = React.useState(false);
+  const [grouped, setGrouped] = React.useState(true);
+  const { image: IMAGE_MODELS, video: VIDEO_MODELS } = useModels();
   const [imageModel, setImageModel] = React.useState("");
   const [videoModel, setVideoModel] = React.useState("");
   const [order, setOrder] = React.useState<string[]>([]);
@@ -61,6 +63,16 @@ export function StoryboardView() {
 
   const cols = { s: "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6", m: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4", l: "grid-cols-1 lg:grid-cols-2" }[size];
 
+  const writing = state.jobs.find((j) => ["WRITE_OUTLINE", "WRITE_SEQUENCE"].includes(j.type) && ["QUEUED", "RUNNING"].includes(j.status));
+  if (!state.shots.length && (writing || state.sequences.length)) {
+    return (
+      <div className="space-y-4 p-4 sm:p-6">
+        <h1 className="font-display text-2xl font-bold">Storyboard</h1>
+        {writing && <p className="flex items-center gap-2 text-sm text-muted"><span className="size-3 animate-spin rounded-full border-2 border-accent border-t-transparent" /> {writing.step ?? "Writing…"}</p>}
+        <SceneBoard shots={[]} grid={() => null} />
+      </div>
+    );
+  }
   if (!state.shots.length) {
     return (
       <div className="p-6">
@@ -95,6 +107,7 @@ export function StoryboardView() {
         <div>
           <h1 className="font-display text-2xl font-bold">Storyboard</h1>
           <p className="text-sm text-muted">{state.shots.length} shots · {frames} frames · {clips} clips · drag to reorder, click to edit</p>
+          {writing && <p className="mt-1 flex items-center gap-2 text-xs text-accent"><span className="size-2.5 animate-spin rounded-full border-2 border-accent border-t-transparent" /> {writing.step ?? "Writing…"}</p>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {failed > 0 && (
@@ -150,24 +163,7 @@ export function StoryboardView() {
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={shots.map((s) => s.id)} strategy={rectSortingStrategy}>
-          {grouped
-            ? state.scenes
-                .filter((sc) => scene === "all" || sc.id === scene)
-                .map((sc) => {
-                  const list = shots.filter((s) => s.sceneId === sc.id);
-                  if (!list.length) return null;
-                  return (
-                    <div key={sc.id} className="space-y-3">
-                      <div className="flex items-center gap-2 pt-2">
-                        <span className="font-mono text-xs text-accent">{String(sc.index + 1).padStart(2, "0")}</span>
-                        <span className="font-display text-sm font-semibold tracking-wide">{sc.heading}</span>
-                        <span className="h-px flex-1 bg-line" />
-                      </div>
-                      {grid(list)}
-                    </div>
-                  );
-                })
-            : grid(shots)}
+          {grouped ? <SceneBoard shots={shots} grid={grid} /> : grid(shots)}
         </SortableContext>
       </DndContext>
     </div>

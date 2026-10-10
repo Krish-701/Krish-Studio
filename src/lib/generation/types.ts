@@ -1,5 +1,7 @@
 import type { Capability } from "../settings";
+import type { RefType } from "./catalog";
 
+/** A reference passed to a provider: image, video or audio, tagged with what it is for. */
 export interface RefImage {
   assetId?: string;
   /** Storage key (for local upload to the provider). */
@@ -8,8 +10,14 @@ export interface RefImage {
   mime?: string | null;
   /** Provider-side identifier, if already uploaded. */
   providerRef?: string | null;
-  type: "character" | "style" | "image";
+  type: RefType;
+  /** Media kind of the file (defaults to image). */
+  media?: "image" | "video" | "audio";
   label?: string;
+  /** Prompt mention for this reference, e.g. "@mara". */
+  mention?: string;
+  /** Magnific library id (character / product / locations) used instead of uploading the file. */
+  libraryId?: string | null;
 }
 
 export interface ImageRequest {
@@ -21,6 +29,8 @@ export interface ImageRequest {
   seed?: number;
   /** Text overlay label used only by the offline preview renderer. */
   label?: string;
+  /** Ask for a grid (contact sheet / turnaround); labels describe each tile in reading order. */
+  grid?: { cols: number; rows: number; labels: string[] };
 }
 
 export interface VideoRequest {
@@ -28,11 +38,24 @@ export interface VideoRequest {
   aspectRatio: string;
   model?: string | null;
   durationSec: number;
+  resolution?: string | null;
   startFrame?: RefImage | null;
+  endFrame?: RefImage | null;
   references?: RefImage[];
   cameraMotion?: string | null;
   withSound?: boolean;
+  noMusic?: boolean;
+  /** Multi-shot generation: consecutive shots in one call (replaces prompt). */
+  multiPrompt?: { prompt: string; durationSec: number; cameraMotion?: string | null }[];
   label?: string;
+}
+
+export interface ExtendRequest {
+  /** The clip to continue (provider ref or file). */
+  video: RefImage;
+  prompt?: string;
+  durationSec: number;
+  withSound?: boolean;
 }
 
 export interface TtsRequest {
@@ -89,4 +112,5 @@ export interface GenerationProvider {
   sfx?(req: AudioGenRequest, ctx: GenContext): Promise<GenResult>;
   upscale?(req: UpscaleRequest, ctx: GenContext): Promise<GenResult>;
   inpaint?(req: InpaintRequest, ctx: GenContext): Promise<GenResult>;
+  extend?(req: ExtendRequest, ctx: GenContext): Promise<GenResult>;
 }

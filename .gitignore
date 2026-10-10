@@ -4,3 +4,4 @@ storage
 .env
 *.tsbuildinfo
 next-env.d.ts
+dump.rdb

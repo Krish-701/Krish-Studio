@@ -5,13 +5,15 @@ import { requeue } from "@/lib/queue";
 import { generate } from "@/lib/generation/router";
 import type { GenContext, GenResult } from "@/lib/generation/types";
 import { buildImageRequest, buildVideoRequest } from "@/lib/prompt-builder";
-import { localPath, newKey, putFile, storeFromUrl } from "@/lib/storage";
-import { probeDuration } from "@/lib/ffmpeg";
+import { durationOf, persist } from "./store";
+import { runLongform } from "./longform";
+import { autoSequences, linkLocations, renumber } from "@/lib/script/writer";
 import { relayoutVideoTrack, shotStartTime, upsertShotVideoClip } from "@/lib/timeline";
 import { parseScript } from "@/lib/script/parse";
 import { applyParsedScript } from "@/lib/services";
 import { exportMp4 } from "@/lib/export/mp4";
 import { exportStoryboardPdf } from "@/lib/export/pdf";
+import { exportPackage } from "@/lib/export/package";
 import { consistencyCheck, moodCheck, monitorSweep } from "@/lib/agents/checks";
 import { getSettings } from "@/lib/settings";
 import { McpToolError } from "@/lib/mcp/client";
@@ -48,6 +50,15 @@ export async function processJob(jobId: string) {
     const output = await run(job, ctx);
     const fresh = await db.job.findUnique({ where: { id: jobId } });
     if (fresh?.status === "CANCELED") return;
+    const deferred = (output as { __deferred?: number; step?: string } | undefined)?.__deferred;
+    if (deferred) {
+      // Not a failure: put it back in the queue without spending an attempt.
+      await db.job.update({ where: { id: jobId }, data: { status: "QUEUED", attempts: { decrement: 1 }, step: (output as { step?: string }).step ?? "Waiting", progress: 0 } });
+      emit(job, { status: "QUEUED", progress: 0, step: (output as { step?: string }).step ?? "Waiting" });
+      setShotStatus(job, "QUEUED");
+      await requeue(jobId, deferred);
+      return;
+    }
     await db.job.update({ where: { id: jobId }, data: { status: "SUCCEEDED", progress: 100, step: "Done", output: (output ?? {}) as Prisma.InputJsonValue } });
     emit(job, { status: "SUCCEEDED", progress: 100, step: "Done" });
   } catch (e) {
@@ -76,27 +87,24 @@ function emit(job: Job, p: { status: string; progress: number; step: string; err
 }
 
 function setShotStatus(job: Job, status: "QUEUED" | "GENERATING" | "DONE" | "FAILED") {
+  // Multi-shot and contact-sheet jobs cover several shots.
+  const many = (job.input as { shotIds?: string[] })?.shotIds;
+  if (!job.shotId && many?.length && (job.type === "MULTISHOT_VIDEO" || job.type === "CONTACT_SHEET")) {
+    const field = job.type === "CONTACT_SHEET" ? "imageStatus" : "videoStatus";
+    if (status === "DONE") return;
+    db.shot
+      .updateMany({ where: { id: { in: many } }, data: { [field]: status } })
+      .then(() => many.forEach((id) => publish(job.projectId, { type: "shot", shotId: id, patch: { [field]: status } })))
+      .catch(() => {});
+    return;
+  }
   if (!job.shotId) return;
-  const field = job.type === "IMAGE" || job.type === "UPSCALE" || job.type === "INPAINT" ? "imageStatus" : job.type === "VIDEO" ? "videoStatus" : job.type === "TTS" ? "audioStatus" : null;
+  const field = job.type === "IMAGE" || job.type === "UPSCALE" || job.type === "INPAINT" ? "imageStatus" : job.type === "VIDEO" || job.type === "EXTEND_VIDEO" ? "videoStatus" : job.type === "TTS" ? "audioStatus" : null;
   if (!field) return;
   db.shot
     .update({ where: { id: job.shotId }, data: { [field]: status } })
     .then(() => publish(job.projectId, { type: "shot", shotId: job.shotId!, patch: { [field]: status } }))
     .catch(() => {});
-}
-
-async function persist(projectId: string, folder: string, res: GenResult) {
-  if (res.buffer) {
-    const key = newKey(projectId, folder, res.mime);
-    const stored = await putFile(key, res.buffer, res.mime);
-    return { ...stored, mime: res.mime };
-  }
-  if (!res.url) throw new Error("Generation returned no media");
-  return storeFromUrl(projectId, folder, res.url, res.mime);
-}
-
-async function durationOf(key: string, fallback?: number) {
-  return (await probeDuration(await localPath(key))) ?? fallback ?? 4;
 }
 
 async function autoAgents(fn: () => Promise<void>) {
@@ -112,11 +120,15 @@ async function run(job: Job, ctx: GenContext): Promise<unknown> {
       const parsed = await parseScript(input.text, ctx.onProgress);
       await ctx.onProgress(92, `Creating ${parsed.scenes.length} scenes`);
       await applyParsedScript(job.projectId, parsed, input.replace !== false);
+      // Long scripts get sequences and film sets like a written film.
+      await linkLocations(job.projectId);
+      await autoSequences(job.projectId);
+      await renumber(job.projectId);
       return { scenes: parsed.scenes.length, shots: parsed.scenes.reduce((n, s) => n + s.shots.length, 0), characters: parsed.characters.length, method: parsed.method };
     }
 
     case "IMAGE": {
-      const { req, characters } = await buildImageRequest(job.shotId!);
+      const { req, characters } = await buildImageRequest(job.shotId!, { model: input.model });
       await ctx.onProgress(3, `Locking ${characters.length} character(s) · ${req.references.length} ref image(s)`);
       const res = await generate("image", ctx, (p) => p.image?.(req, ctx), job.provider);
       await ctx.onProgress(96, "Saving frame");
@@ -139,9 +151,15 @@ async function run(job: Job, ctx: GenContext): Promise<unknown> {
 
     case "VIDEO": {
       const shot = await db.shot.findUniqueOrThrow({ where: { id: job.shotId! } });
-      const mode = input.mode === "t2v" || !shot.imageAssetId ? "t2v" : "i2v";
-      const req = await buildVideoRequest(job.shotId!, mode);
-      await ctx.onProgress(3, mode === "i2v" ? "Animating approved frame" : "Text-to-video with character refs");
+      // A continuous shot starts from the previous clip's last frame, so it waits for that clip.
+      if (shot.continuity === "continuous") {
+        const prev = await db.shot.findFirst({ where: { projectId: job.projectId, order: { lt: shot.order } }, orderBy: { order: "desc" } });
+        const pending = prev && !prev.videoAssetId && (await db.job.count({ where: { shotId: prev.id, type: { in: ["VIDEO", "MULTISHOT_VIDEO", "EXTEND_VIDEO"] }, status: { in: ["QUEUED", "RUNNING"] } } }));
+        if (pending) return { __deferred: 15_000, step: `Waiting for shot #${prev!.order + 1}` };
+      }
+      const req = await buildVideoRequest(job.shotId!, input.mode, { model: input.model });
+      const mode = req.plan.mode;
+      await ctx.onProgress(3, mode === "frame" ? `Animating from ${req.plan.start?.label ?? "frame"}` : mode === "reference" ? `Reference mode · ${req.references?.length ?? 0} refs` : "Text to video");
       const res = await generate("video", ctx, (p) => p.video?.(req, ctx), job.provider);
       await ctx.onProgress(96, "Saving clip");
       const stored = await persist(job.projectId, "clips", res);
@@ -149,7 +167,7 @@ async function run(job: Job, ctx: GenContext): Promise<unknown> {
       const asset = await db.asset.create({
         data: {
           projectId: job.projectId, shotId: job.shotId, kind: "VIDEO", role: "SHOT_VIDEO", storageKey: stored.key, url: stored.url, mimeType: stored.mime, durationSec: dur,
-          providerRef: res.providerRef, meta: { prompt: req.prompt, model: req.model ?? "auto", provider: res.providerName, mode, preview: !!res.meta?.preview } as Prisma.InputJsonValue,
+          providerRef: res.providerRef, meta: { prompt: req.prompt, model: req.model ?? "auto", provider: res.providerName, mode, refs: req.references?.length ?? 0, dropped: req.plan.dropped.length, preview: !!res.meta?.preview } as Prisma.InputJsonValue,
         },
       });
       await db.shot.update({ where: { id: job.shotId! }, data: { videoAssetId: asset.id, videoStatus: "DONE" } });
@@ -232,6 +250,20 @@ async function run(job: Job, ctx: GenContext): Promise<unknown> {
       publish(job.projectId, { type: "refresh", scope: "assets" });
       return out;
     }
+
+    case "EXPORT_PACKAGE": {
+      const out = await exportPackage(job.projectId, ctx.onProgress, { includeMedia: (input as { includeMedia?: boolean }).includeMedia });
+      publish(job.projectId, { type: "refresh", scope: "assets" });
+      return out;
+    }
+
+    case "WRITE_OUTLINE":
+    case "WRITE_SEQUENCE":
+    case "DESIGN_SHEET":
+    case "CONTACT_SHEET":
+    case "MULTISHOT_VIDEO":
+    case "EXTEND_VIDEO":
+      return runLongform(job, ctx);
 
     case "AGENT_CHECK": {
       if (input.agent === "MONITOR") await monitorSweep(job.projectId);
