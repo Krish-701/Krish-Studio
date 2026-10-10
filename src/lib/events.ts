@@ -13,7 +13,21 @@ export type StudioEvent =
   | { type: "finding"; finding: Record<string, unknown> }
   | { type: "agent"; agent: string; status: "thinking" | "idle" | "acting"; detail?: string }
   | { type: "chat"; messageId: string; agent: string; delta?: string; done?: boolean }
-  | { type: "refresh"; scope: "shots" | "assets" | "timeline" | "characters" | "project" | "memory" | "all" };
+  | { type: "refresh"; scope: "shots" | "assets" | "timeline" | "characters" | "project" | "memory" | "all" }
+  | { type: "log"; entry: LogEntry };
+
+/** One row of the project activity log, as sent to the browser. */
+export interface LogEntry {
+  id: string;
+  createdAt: string;
+  kind: "job" | "agent" | "tool" | "user" | "system" | "summary";
+  level: "info" | "warn" | "error" | "success";
+  actor: string | null;
+  message: string;
+  data: unknown;
+  jobId: string | null;
+  shotId: string | null;
+}
 
 const CHANNEL = "filmstudio:events:";
 

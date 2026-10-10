@@ -72,20 +72,29 @@ export function defaultServers(): McpServerConfig[] {
   ];
 }
 
+/** The studio's default brain: Qwen3.8 Omni Flash on OpenRouter, reasoning on, streamed. */
+export const DEFAULT_LLM = { baseUrl: "https://openrouter.ai/api/v1", model: "qwen/qwen3.8-omni-flash" };
+const envKey = () => process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || null;
+
 export async function getSettings(): Promise<Settings> {
   let row = await db.appSettings.findUnique({ where: { id: "global" } });
   if (!row) {
+    const base = process.env.LLM_BASE_URL || DEFAULT_LLM.baseUrl;
     row = await db.appSettings.create({
       data: {
         id: "global",
-        llmBaseUrl: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
-        llmApiKey: encryptSecret(process.env.LLM_API_KEY || null),
-        llmModel: process.env.LLM_MODEL || "gpt-4o",
-        llmReasoning: process.env.LLM_REASONING === "1" || /openrouter\.ai/.test(process.env.LLM_BASE_URL || ""),
+        llmBaseUrl: base,
+        llmApiKey: encryptSecret(envKey()),
+        llmModel: process.env.LLM_MODEL || DEFAULT_LLM.model,
+        llmReasoning: process.env.LLM_REASONING === "1" || (process.env.LLM_REASONING !== "0" && /openrouter\.ai/.test(base)),
         visionModel: process.env.LLM_VISION_MODEL || "",
         mcpServers: defaultServers().map((s) => ({ ...s, token: encryptSecret(s.token) })) as never,
       },
     });
+  }
+  // Installs that never configured an AI move to the new default (an untouched OpenAI/gpt-4o row with no key).
+  if (!row.llmApiKey && row.llmModel === "gpt-4o" && /api\.openai\.com/.test(row.llmBaseUrl)) {
+    row = await db.appSettings.update({ where: { id: "global" }, data: { llmBaseUrl: DEFAULT_LLM.baseUrl, llmModel: DEFAULT_LLM.model, llmReasoning: true } });
   }
   // Models synced from the provider extend the built-in catalog everywhere (UI, planner, worker).
   setLiveCatalog((row.modelCatalog as unknown as { image?: ModelInfo[]; video?: ModelInfo[] }) ?? null);
@@ -95,7 +104,8 @@ export async function getSettings(): Promise<Settings> {
   }));
   return {
     llmBaseUrl: row.llmBaseUrl,
-    llmApiKey: decryptSecret(row.llmApiKey),
+    // A key in the environment (cloud secrets) works without saving it in Settings.
+    llmApiKey: decryptSecret(row.llmApiKey) || envKey(),
     llmModel: row.llmModel,
     agentModels: (row.agentModels as Record<string, string>) || {},
     autoAgents: row.autoAgents,

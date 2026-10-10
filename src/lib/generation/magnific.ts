@@ -3,7 +3,7 @@ import { callTool, collect, field, fields, findUrls, McpToolError } from "../mcp
 import { getFile } from "../storage";
 import { sleep } from "../utils";
 import { parseToolText } from "../mcp/toon";
-import { fromMagnific, snap, snapAspect, videoModel, type ModelInfo } from "./catalog";
+import { fromMagnific, imageModel, snap, snapAspect, videoModel, type ModelInfo } from "./catalog";
 import type { GenContext, GenerationProvider, GenResult, RefImage } from "./types";
 
 /**
@@ -142,7 +142,10 @@ export function magnificProvider(cfg: McpServerConfig): MagnificProvider {
       }
       await ctx.onProgress(15, `Submitting to Magnific (${req.model || "auto"})`);
       const prompt = req.negativePrompt ? `${req.prompt}\n\nAvoid: ${req.negativePrompt}` : req.prompt;
+      const im = req.model ? imageModel(req.model) : undefined;
+      const variant = req.variant || im?.defaultVariant;
       const res = await callTool(cfg, "images_generate", {
+        ...(variant && (!im?.variants || im.variants.includes(variant)) ? { variant } : {}),
         prompt,
         mode: req.model || "auto",
         aspectRatio: snapAspect(req.aspectRatio, IMAGE_ASPECTS),

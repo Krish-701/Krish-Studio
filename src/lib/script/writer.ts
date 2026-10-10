@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { publish } from "../events";
-import { chatJson, isLlmConfigured } from "../llm";
+import { chatJson, isLlmConfigured, type ChatMessage } from "../llm";
 import { memoryPrompt } from "../memory";
 import { FORMATS, LOOKS } from "../generation/catalog";
 import type { StyleLock } from "../prompt-builder";
@@ -56,14 +56,47 @@ export function handleOf(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24) || "char";
 }
 
-/** How a runtime splits into acts and sequences. ~3.5 min per sequence for features, fewer for shorts. */
+/** Shot lengths the agent may choose from. The story decides; these are only the bounds. */
+export const SHOT_MIN = 3;
+export const SHOT_MAX = 15;
+
+/**
+ * Fits the agent's chosen shot lengths to a target total without flattening the rhythm:
+ * scales them proportionally, clamps each to 3–15 s, then spreads any remainder over the shots
+ * that still have room. Returns the lengths rounded to 0.5 s.
+ */
+export function fitDurations(wanted: number[], targetSec: number): number[] {
+  if (!wanted.length) return [];
+  const raw = wanted.map((d) => (Number.isFinite(d) && d > 0 ? d : 6));
+  const goal = Math.min(targetSec, raw.length * SHOT_MAX);
+  const sum = raw.reduce((a, b) => a + b, 0);
+  let out = raw.map((d) => Math.min(SHOT_MAX, Math.max(SHOT_MIN, (d * goal) / sum)));
+  for (let pass = 0; pass < 6; pass++) {
+    const diff = goal - out.reduce((a, b) => a + b, 0);
+    if (Math.abs(diff) < 0.25) break;
+    const room = out.map((d) => (diff > 0 ? SHOT_MAX - d : d - SHOT_MIN));
+    const total = room.reduce((a, b) => a + b, 0);
+    if (total <= 0) break;
+    out = out.map((d, i) => d + (diff * room[i]) / total);
+  }
+  return out.map((d) => Math.min(SHOT_MAX, Math.max(SHOT_MIN, Math.round(d * 2) / 2)));
+}
+
+/** Story-led pacing for the offline skeleton: establishing shots hold, inserts and reactions are short. */
+const SKELETON_PACE: Record<string, number> = { EXTREME_WIDE: 9, WIDE: 8, FULL: 6, MEDIUM: 6, MEDIUM_CLOSE: 5, CLOSE_UP: 4, EXTREME_CLOSE_UP: 3, OVER_SHOULDER: 5, POV: 4, INSERT: 3, AERIAL: 10 };
+
+/**
+ * How a runtime splits into acts and sequences. ~3.5 min per sequence for features, fewer for shorts.
+ * Shot counts here are only a sizing estimate; the writer agent decides the real count and each
+ * shot's length (3–15 s) from the story.
+ */
 export function structureFor(format: string, runtimeSec: number) {
   const f = FORMATS.find((x) => x.id === format) ?? FORMATS[1];
   const acts = runtimeSec <= 90 ? 1 : f.acts;
   const seqLen = runtimeSec <= 120 ? runtimeSec / Math.max(1, Math.round(runtimeSec / 30)) : runtimeSec <= 900 ? 60 : runtimeSec <= 3600 ? 150 : 210;
   const sequences = Math.max(1, Math.round(runtimeSec / seqLen));
-  const shotsPerSeq = Math.max(2, Math.round(runtimeSec / sequences / f.avgShot));
-  return { acts, sequences, seqLen: runtimeSec / sequences, avgShot: f.avgShot, shotsPerSeq, scenesPerSeq: runtimeSec <= 120 ? 1 : Math.min(5, Math.max(1, Math.round(runtimeSec / sequences / 70))) };
+  const shotsPerSeq = Math.max(2, Math.round(runtimeSec / sequences / f.typicalShot));
+  return { acts, sequences, seqLen: runtimeSec / sequences, typicalShot: f.typicalShot, pace: f.pace, shotsPerSeq, scenesPerSeq: runtimeSec <= 120 ? 1 : Math.min(5, Math.max(1, Math.round(runtimeSec / sequences / 70))) };
 }
 
 async function bible(projectId: string) {
@@ -114,7 +147,7 @@ export async function writeOutline(projectId: string, onProgress: (pct: number, 
         { role: "system", content: WRITER_SYSTEM },
         {
           role: "user",
-          content: `${text}\n\nWrite the outline for this ${project.format} of ${Math.round(project.targetRuntimeSec)} seconds: ${st.acts} act(s), ${st.sequences} sequences in total (about ${Math.round(st.seqLen)} seconds each).
+          content: `${text}\n\nWrite the outline for this ${project.format} of ${Math.round(project.targetRuntimeSec)} seconds: ${st.acts} act(s), ${st.sequences} sequences in total (about ${Math.round(st.seqLen)} seconds each on average; give each sequence the length its story needs in "targetSec", all adding up to ${Math.round(project.targetRuntimeSec)} seconds).
 Also list the main characters (with a precise visual description: age, ethnicity, face, hair, build, signature wardrobe), the recurring film sets (locations) and key props. Keep existing cast and sets.
 JSON: {"title":"","logline":"","acts":[{"act":1,"title":"","summary":"","sequences":[{"title":"","summary":"2-3 sentences: what happens, who, where","targetSec":${Math.round(st.seqLen)}}]}],"characters":[{"name":"","role":"protagonist|antagonist|supporting|extra","age":"","gender":"","description":""}],"locations":[{"name":"","description":""}],"props":[{"name":"","description":""}]}`,
         },
@@ -124,6 +157,10 @@ JSON: {"title":"","logline":"","acts":[{"act":1,"title":"","summary":"","sequenc
   } else {
     outline = skeletonOutline(project.synopsis || project.logline || project.title, st.acts, st.sequences, st.seqLen);
   }
+  // Keep the writer's weighting between sequences, but land exactly on the runtime the user set.
+  const seqs = (outline.acts ?? []).flatMap((a) => a.sequences ?? []);
+  const sum = seqs.reduce((a, s) => a + (Number(s.targetSec) > 0 ? Number(s.targetSec) : st.seqLen), 0);
+  for (const s of seqs) s.targetSec = Math.round((((Number(s.targetSec) > 0 ? Number(s.targetSec) : st.seqLen) * project.targetRuntimeSec) / (sum || 1)) * 10) / 10;
   await onProgress(70, "Saving outline");
   await applyOutline(projectId, outline);
   return outline;
@@ -208,7 +245,6 @@ export async function writeSequence(sequenceId: string, onProgress: (pct: number
   const before = prevSeq?.scenes[0] ? `Just before this sequence: ${prevSeq.scenes[0].heading} — ${prevSeq.scenes[0].summary ?? ""} Last shots: ${prevSeq.scenes[0].shots.map((s) => s.description).join(" / ")}` : "This is the opening sequence.";
   const llm = await isLlmConfigured();
   const nScenes = st.scenesPerSeq;
-  const shotTarget = Math.max(2, Math.round(seq.targetDurationSec / st.avgShot));
 
   await onProgress(8, `Writing scenes for “${seq.title}”`);
   let scenes: SceneJson[];
@@ -218,7 +254,7 @@ export async function writeSequence(sequenceId: string, onProgress: (pct: number
         { role: "system", content: WRITER_SYSTEM },
         {
           role: "user",
-          content: `${text}\n\n${before}\n\nNow write sequence ${seq.index + 1} (Act ${seq.act}): "${seq.title}" — ${seq.summary}\nTarget length ${Math.round(seq.targetDurationSec)} seconds, about ${nScenes} scene(s).
+          content: `${text}\n\n${before}\n\nNow write sequence ${seq.index + 1} (Act ${seq.act}): "${seq.title}" — ${seq.summary}\nTarget length ${Math.round(seq.targetDurationSec)} seconds, about ${nScenes} scene(s). Give each scene the screen time its story needs in "targetSec" (they should add up to ${Math.round(seq.targetDurationSec)}).
 JSON: {"scenes":[{"heading":"INT. PLACE - DAY","location":"name of a film set from the bible, or a new one","timeOfDay":"DAY|NIGHT|DAWN|DUSK","summary":"","beats":["what happens, in order"],"characters":["names"],"targetSec":0}]}`,
         },
       ],
@@ -228,6 +264,10 @@ JSON: {"scenes":[{"heading":"INT. PLACE - DAY","location":"name of a film set fr
   } else {
     scenes = Array.from({ length: nScenes }, (_, i) => ({ heading: `${seq.title.toUpperCase()}${nScenes > 1 ? ` — PART ${i + 1}` : ""}`, summary: seq.summary, beats: [seq.summary], targetSec: seq.targetDurationSec / nScenes }));
   }
+  // The writer may weight scenes unevenly; keep its proportions but make them add up to the sequence.
+  const sceneWant = scenes.map((sc) => Number(sc.targetSec) > 0 ? Number(sc.targetSec) : seq.targetDurationSec / scenes.length);
+  const wantSum = sceneWant.reduce((a, b) => a + b, 0);
+  scenes.forEach((sc, i) => (sc.targetSec = (sceneWant[i] * seq.targetDurationSec) / wantSum));
 
   // Replace this sequence's scenes.
   const old = await db.scene.findMany({ where: { sequenceId: seq.id }, select: { id: true } });
@@ -254,47 +294,58 @@ JSON: {"scenes":[{"heading":"INT. PLACE - DAY","location":"name of a film set fr
     const scene = await db.scene.create({
       data: {
         projectId: project.id, sequenceId: seq.id, index: seq.index * 1000 + si, heading: sc.heading.slice(0, 200), location: sc.location, locationId: set?.id,
-        timeOfDay: sc.timeOfDay, summary: sc.summary, beats: (sc.beats ?? []) as never, targetDurationSec: Number(sc.targetSec) || seq.targetDurationSec / scenes.length,
+        timeOfDay: sc.timeOfDay, summary: sc.summary, beats: (sc.beats ?? []) as never, targetDurationSec: sc.targetSec!,
       },
     });
-    const sceneShots = Math.max(1, Math.round(((Number(sc.targetSec) || seq.targetDurationSec / scenes.length) / seq.targetDurationSec) * shotTarget));
+    const sceneSec = sc.targetSec!;
+    const minShots = Math.max(1, Math.ceil(sceneSec / SHOT_MAX));
+    const maxShots = Math.max(minShots, Math.floor(sceneSec / SHOT_MIN));
     let shots: ShotJson[];
     if (llm) {
-      const r = await chatJson<{ shots: ShotJson[] }>(
-        [
+      const boardMsgs: ChatMessage[] = [
           { role: "system", content: WRITER_SYSTEM },
           {
             role: "user",
             content: `${text}\n\nSequence "${seq.title}": ${seq.summary}\n${lastShots ? `Previous shots: ${lastShots}\n` : `${before}\n`}
-Board this scene as about ${sceneShots} shots (average ${st.avgShot}s each, 2–12s): ${sc.heading} — ${sc.summary}\nBeats: ${(sc.beats ?? []).join(" / ")}
+Board this scene: ${sc.heading} — ${sc.summary}\nBeats: ${(sc.beats ?? []).join(" / ")}
+Screen time for this scene: ${Math.round(sceneSec)} seconds. You decide how many shots it needs (between ${minShots} and ${maxShots}) and how long each one runs, from 3 to 15 seconds, based on the story: quick 3–4 s cuts for action, tension and reactions; 5–8 s for dialogue and coverage; 9–15 s holds for establishing shots, emotional beats, reveals and continuous camera moves. Pacing for this ${project.format}: ${st.pace}. The shot durations should add up to about ${Math.round(sceneSec)} s.
 Rules: name every character in frame in "characters" (exact cast names). "prompt" is a single image prompt for the storyboard frame (subject, action, framing, set, light). "motionPrompt" says how the shot moves (camera and action) for video. Vary framing (wide, medium, close-up, inserts) like a real edit; cut on action. Set "continuous": true when a shot must continue the previous one without a cut in time.
-JSON: {"shots":[{"title":"","description":"","prompt":"","motionPrompt":"","shotType":"EXTREME_WIDE|WIDE|FULL|MEDIUM|MEDIUM_CLOSE|CLOSE_UP|EXTREME_CLOSE_UP|OVER_SHOULDER|POV|INSERT|AERIAL","cameraMove":"static|pushIn|pullOut|panLeft|panRight|tiltUp|tiltDown|truckLeft|truckRight|craneUp|craneDown|orbitLeft|orbitRight|handheld|whipPan|fpvDrone","durationSec":4,"dialogue":"","speaker":"","characters":[],"props":[],"continuous":false}]}`,
+JSON: {"shots":[{"title":"","description":"","prompt":"","motionPrompt":"","shotType":"EXTREME_WIDE|WIDE|FULL|MEDIUM|MEDIUM_CLOSE|CLOSE_UP|EXTREME_CLOSE_UP|OVER_SHOULDER|POV|INSERT|AERIAL","cameraMove":"static|pushIn|pullOut|panLeft|panRight|tiltUp|tiltDown|truckLeft|truckRight|craneUp|craneDown|orbitLeft|orbitRight|handheld|whipPan|fpvDrone","durationSec":6,"dialogue":"","speaker":"","characters":[],"props":[],"continuous":false}]}`,
           },
-        ],
-        { agent: "DIRECTOR", temperature: 0.6 },
-      );
+      ];
+      const r = await chatJson<{ shots: ShotJson[] }>(boardMsgs, { agent: "DIRECTOR", temperature: 0.6 });
       shots = r.shots ?? [];
+      // Too few shots can't fill the scene even at 15 s each: ask once more for a fuller board.
+      if (shots.length < minShots) {
+        const again = await chatJson<{ shots: ShotJson[] }>(
+          [...boardMsgs, { role: "assistant", content: JSON.stringify({ shots }) }, { role: "user", content: `That is ${shots.length} shot(s); the scene runs ${Math.round(sceneSec)} s and no shot may be longer than 15 s. Board it again with at least ${minShots} shots, same JSON.` }],
+          { agent: "DIRECTOR", temperature: 0.6 },
+        ).catch(() => null);
+        if ((again?.shots?.length ?? 0) > shots.length) shots = again!.shots;
+      }
     } else {
       const cast = (sc.characters ?? chars.slice(0, 2).map((c) => c.name)).filter(Boolean);
       const types = ["WIDE", "MEDIUM", "CLOSE_UP", "OVER_SHOULDER", "INSERT", "MEDIUM_CLOSE"];
-      shots = Array.from({ length: sceneShots }, (_, i) => ({
+      const n = Math.min(maxShots, Math.max(minShots, Math.round(sceneSec / st.typicalShot)));
+      shots = Array.from({ length: n }, (_, i) => ({
         title: `${sc.heading.split(" — ")[0]} · ${i + 1}`,
         description: `${sc.summary} (${types[i % types.length].toLowerCase().replace("_", " ")})`,
         shotType: types[i % types.length],
         cameraMove: i === 0 ? "pushIn" : "static",
-        durationSec: st.avgShot,
+        durationSec: SKELETON_PACE[types[i % types.length]] ?? 6,
         characters: i === 0 || i % 2 ? cast : cast.slice(0, 1),
       }));
     }
+    const lengths = fitDurations(shots.map((sh) => Number(sh.durationSec)), sceneSec);
     let order = 0;
-    for (const sh of shots) {
+    for (const [k, sh] of shots.entries()) {
       const linked = (sh.characters ?? []).map((n) => byName.get(String(n).toLowerCase())).filter(Boolean);
       const propIds = (sh.props ?? []).map((n) => props.find((p) => p.name.toLowerCase() === String(n).toLowerCase())?.id).filter((x): x is string => !!x);
       await db.shot.create({
         data: {
           projectId: project.id, sceneId: scene.id, order: seq.index * 100000 + si * 1000 + order++,
           title: (sh.title || sh.description || "Shot").slice(0, 120), description: sh.description ?? "", prompt: sh.prompt ?? "", motionPrompt: sh.motionPrompt ?? "",
-          shotType: sh.shotType, cameraMove: sh.cameraMove, durationSec: Math.min(15, Math.max(2, Number(sh.durationSec) || st.avgShot)),
+          shotType: sh.shotType, cameraMove: sh.cameraMove, durationSec: lengths[k],
           dialogue: sh.dialogue || null, speaker: sh.speaker || null, continuity: sh.continuous ? "continuous" : "cut",
           characters: { create: linked.map((c) => ({ characterId: c!.id })) },
           elements: { create: propIds.map((elementId) => ({ elementId })) },

@@ -3,7 +3,7 @@ import * as React from "react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/client";
 import type { ProjectState } from "@/lib/project-state";
-import type { StudioEvent } from "@/lib/events";
+import type { LogEntry, StudioEvent } from "@/lib/events";
 
 export type Shot = ProjectState["shots"][number];
 export type Character = ProjectState["characters"][number];
@@ -15,7 +15,7 @@ export type Clip = ProjectState["clips"][number];
 export type Finding = ProjectState["findings"][number];
 export type Asset = ProjectState["assets"][number];
 
-export type View = "script" | "characters" | "style" | "storyboard" | "timeline" | "watch" | "export";
+export type View = "autopilot" | "script" | "characters" | "style" | "storyboard" | "timeline" | "watch" | "export";
 
 interface AgentLive {
   status: "thinking" | "idle" | "acting";
@@ -36,6 +36,8 @@ interface Ctx {
   streaming: { agent: string; text: string } | null;
   chatVersion: number;
   memoryVersion: number;
+  /** Activity-log entries received live over SSE since the page opened, newest first (capped). */
+  liveLog: LogEntry[];
   connected: boolean;
 }
 
@@ -56,6 +58,7 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
   const [chatVersion, setChatVersion] = React.useState(0);
   const [memoryVersion, setMemoryVersion] = React.useState(0);
   const [connected, setConnected] = React.useState(false);
+  const [liveLog, setLiveLog] = React.useState<LogEntry[]>([]);
 
   // Pick the starting view from the project stage once.
   const didInit = React.useRef(false);
@@ -63,7 +66,7 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
     if (!data || didInit.current) return;
     didInit.current = true;
     const fromHash = typeof window !== "undefined" ? (window.location.hash.slice(1) as View) : null;
-    if (fromHash && ["script", "characters", "style", "storyboard", "timeline", "watch", "export"].includes(fromHash)) setViewState(fromHash);
+    if (fromHash && ["autopilot", "script", "characters", "style", "storyboard", "timeline", "watch", "export"].includes(fromHash)) setViewState(fromHash);
     else if (!data.shots.length && !data.sequences.length && data.project.setupDone) setViewState("script");
     else if (data.project.stage === "VIDEO" || data.project.stage === "AUDIO") setViewState("timeline");
   }, [data]);
@@ -128,6 +131,9 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
             setChatVersion((v) => v + 1);
           }
           break;
+        case "log":
+          setLiveLog((l) => [e.entry, ...l].slice(0, 300));
+          break;
         case "refresh":
           if (e.scope === "memory") setMemoryVersion((v) => v + 1);
           else scheduleRefresh();
@@ -150,6 +156,7 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
     streaming,
     chatVersion,
     memoryVersion,
+    liveLog,
     connected,
   };
   return <StudioCtx.Provider value={value}>{children}</StudioCtx.Provider>;

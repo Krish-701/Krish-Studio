@@ -25,6 +25,8 @@ export interface ImageRequest {
   negativePrompt?: string;
   aspectRatio: string;
   model?: string | null;
+  /** Model variant, e.g. GPT Image 2.5 "flare". */
+  variant?: string | null;
   references: RefImage[];
   seed?: number;
   /** Text overlay label used only by the offline preview renderer. */

@@ -7,6 +7,8 @@ import * as svc from "../services";
 import { enqueue } from "../queue";
 import { AGENTS } from "./definitions";
 import { runTool, toolDefs, type ToolCtx } from "./tools";
+import { argsSummary, logActivity } from "../activity";
+import { maybeSummarize } from "./summary";
 
 type Kind = Exclude<AgentKind, "USER">;
 
@@ -18,6 +20,8 @@ interface RunOpts {
   conversation?: boolean;
   depth?: number;
   signal?: AbortSignal;
+  /** Who sent the input, for the activity log ("you" by default for top-level turns). */
+  from?: string;
 }
 
 const MAX_STEPS = 12;
@@ -77,10 +81,14 @@ function parsePromptedCalls(text: string, step: number): { calls: ToolCall[]; re
 export async function runAgent(opts: RunOpts): Promise<string> {
   const { projectId, agent, input, depth = 0 } = opts;
   const def = AGENTS[agent];
+  if (depth === 0) await logActivity(projectId, { kind: "user", actor: opts.from ?? "you", message: `To ${def.name}: ${clip(input, 300)}`, data: input.length > 300 ? { input } : undefined });
   const overview = await svc.projectOverview(projectId).catch(() => null);
 
   if (!(await llmConfig(agent))) {
-    return offlineAgent(projectId, input, opts.conversation);
+    const out = await offlineAgent(projectId, input, opts.conversation);
+    await logActivity(projectId, { kind: "agent", actor: def.name, message: clip(out, 200), data: out.length > 200 ? { reply: out } : undefined });
+    if (depth === 0) maybeSummarize(projectId).catch(() => {});
+    return out;
   }
 
   const cfg = await llmConfig(agent);
@@ -102,6 +110,7 @@ export async function runAgent(opts: RunOpts): Promise<string> {
     depth,
     spawn: async (sub, task) => {
       publish(projectId, { type: "agent", agent: sub, status: "thinking", detail: task.slice(0, 120) });
+      await logActivity(projectId, { kind: "agent", actor: def.name, message: `Briefed ${AGENTS[sub].name}: ${clip(task, 200)}`, data: { agent: sub, task } });
       const report = await runAgent({ projectId, agent: sub, input: task, depth: depth + 1, signal: opts.signal });
       await db.agentMessage.create({ data: { projectId, agent: sub, role: "assistant", content: report } });
       publish(projectId, { type: "chat", messageId: "sub", agent: sub, done: true });
@@ -126,7 +135,10 @@ export async function runAgent(opts: RunOpts): Promise<string> {
         onReasoning: (r) => publish(projectId, { type: "agent", agent, status: "thinking", detail: r.slice(-120) }),
       });
     } catch (e) {
-      if (!(e instanceof ToolsUnsupported) || prompted) throw e;
+      if (!(e instanceof ToolsUnsupported) || prompted) {
+        await logActivity(projectId, { kind: "agent", level: "error", actor: def.name, message: `Model call failed: ${clip((e as Error).message, 300)}` });
+        throw e;
+      }
       prompted = true;
       messages[0] = { role: "system", content: system + promptedToolsBlock(tools) };
       step--;
@@ -146,6 +158,7 @@ export async function runAgent(opts: RunOpts): Promise<string> {
       for (const call of calls) {
         publish(projectId, { type: "agent", agent, status: "acting", detail: call.function.name });
         const result = await runTool(call.function.name, call.function.arguments, ctx, def.tools);
+        await logToolActivity(projectId, def.name, call, result);
         if (opts.conversation) await logTool(projectId, agent, call, result, streamId);
         results.push(`Result of ${call.function.name}: ${JSON.stringify(result).slice(0, 12000)}`);
       }
@@ -161,17 +174,34 @@ export async function runAgent(opts: RunOpts): Promise<string> {
     for (const call of reply.tool_calls) {
       publish(projectId, { type: "agent", agent, status: "acting", detail: call.function.name });
       const result = await runTool(call.function.name, call.function.arguments, ctx, def.tools);
+      await logToolActivity(projectId, def.name, call, result);
       if (opts.conversation) await logTool(projectId, agent, call, result, streamId);
       messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result).slice(0, 12000) });
     }
   }
   publish(projectId, { type: "agent", agent, status: "idle" });
   if (!final) final = "Done.";
+  await logActivity(projectId, { kind: "agent", level: "success", actor: def.name, message: clip(final, 200), data: final.length > 200 ? { reply: final } : undefined });
   if (opts.conversation) {
     await db.agentMessage.create({ data: { projectId, agent, role: "assistant", content: final, reasoning: finalReasoning?.length ? JSON.stringify(finalReasoning) : undefined } });
     publish(projectId, { type: "chat", messageId: "final", agent, done: true });
   }
+  if (depth === 0) maybeSummarize(projectId).catch(() => {});
   return final;
+}
+
+const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n).trimEnd() + "…" : s);
+
+async function logToolActivity(projectId: string, actor: string, call: ToolCall, result: unknown) {
+  const err = result && typeof result === "object" && "error" in result ? String((result as { error: unknown }).error) : null;
+  const args = argsSummary(call.function.arguments);
+  await logActivity(projectId, {
+    kind: "tool",
+    level: err ? "error" : "info",
+    actor,
+    message: `${call.function.name}${args ? ` ${args}` : ""} → ${err ? `error: ${clip(err, 160)}` : "ok"}`,
+    data: { tool: call.function.name, args: safeJson(call.function.arguments), result: truncate(result) },
+  });
 }
 
 async function logTool(projectId: string, agent: Kind, call: ToolCall, result: unknown, streamId: string) {

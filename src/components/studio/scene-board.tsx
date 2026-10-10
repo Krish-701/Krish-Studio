@@ -7,6 +7,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { NativeSelect, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/client";
+import { DEFAULT_VIDEO_MODEL } from "@/lib/generation/catalog";
 import { cn } from "@/lib/utils";
 import { useStudio, type Scene, type Sequence, type Shot } from "./store";
 import { runtimeLabel } from "./film-wizard";
@@ -169,7 +170,7 @@ function CheckShotsDialog({ scope, onClose }: { scope: Scope | null; onClose: ()
   const { state, projectId } = useStudio();
   const { video } = useModels();
   const defaults = (state?.project.defaults as Record<string, string>) ?? {};
-  const [model, setModel] = React.useState(defaults.video ?? "bytedance-seedance-pro-2.5");
+  const [model, setModel] = React.useState(defaults.video ?? DEFAULT_VIDEO_MODEL);
   const [how, setHow] = React.useState<"multishot" | "video">("multishot");
   const [mode, setMode] = React.useState("auto");
   const [onlyMissing, setOnlyMissing] = React.useState(true);

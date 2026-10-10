@@ -10,6 +10,7 @@ import type { GenContext, ImageRequest } from "@/lib/generation/types";
 import type { MagnificProvider } from "@/lib/generation/magnific";
 import { buildContactSheetRequest, buildMultishotRequest, characterRefList, effectiveStyle, styleText } from "@/lib/prompt-builder";
 import { gridFor, splitGrid, toRef } from "@/lib/media";
+import { DEFAULT_IMAGE_MODEL } from "@/lib/generation/catalog";
 import { localPath, newKey, putFile } from "@/lib/storage";
 import { upsertShotVideoClip } from "@/lib/timeline";
 import { writeOutline, writeSequence } from "@/lib/script/writer";
@@ -158,6 +159,7 @@ async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext
   const project = await db.project.findUniqueOrThrow({ where: { id: job.projectId } });
   const style = effectiveStyle(project, { styleOverride: null } as never);
   const look = styleText(style);
+  const sheetModel = input.model || (project.defaults as Record<string, string> | null)?.image || DEFAULT_IMAGE_MODEL;
 
   if (input.characterId) {
     const c = await db.character.findUniqueOrThrow({ where: { id: input.characterId }, include: { references: true } });
@@ -167,14 +169,14 @@ async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext
       ? {
           prompt: `Full-body character reference of ${c.name}: ${c.description}. Wearing their "${input.look}" look: ${input.lookDescription ?? input.look}. Same face, hair and build as the references. Plain neutral studio background, even light. ${look}`,
           aspectRatio: "3:4",
-          model: input.model || "seedream-5-pro",
+          model: sheetModel,
           references: own.map((r) => ({ ...r, type: "character" })),
           label: `${c.name} · ${input.look}`,
         }
       : {
           prompt: `Character design sheet (turnaround) of ${c.name}: ${c.description}. Four full-body views side by side of the same person — front, three-quarter, side profile, back — identical face, hair, build and wardrobe in every view, neutral light grey studio background, even soft light, no text. ${look}`,
           aspectRatio: "21:9",
-          model: input.model || "seedream-5-pro",
+          model: sheetModel,
           references: own.map((r) => ({ ...r, type: "character" })),
           label: `${c.name} · design sheet`,
           grid: { cols: 4, rows: 1, labels: TURNAROUND.map((a) => `${c.name} — ${a.replace("_", "-")} view`) },
@@ -215,7 +217,7 @@ async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext
     ? {
         prompt: `Location reference plates for the film set "${el.name}": ${el.description}. A 2×2 grid of four views of the same place — ${views.join(", ")} — identical architecture, props and lighting, no people, no text, thin black gutters. ${look}`,
         aspectRatio: project.aspectRatio === "9:16" ? "9:16" : "16:9",
-        model: input.model || "seedream-5-pro",
+        model: sheetModel,
         references: own,
         label: `${el.name} · set`,
         grid: { cols: 2, rows: 2, labels: views.map((v) => `${el.name} — ${v}`) },
@@ -223,7 +225,7 @@ async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext
     : {
         prompt: `Product reference of the prop "${el.name}": ${el.description}. Centred on a plain neutral background, even studio light, no text. ${look}`,
         aspectRatio: "1:1",
-        model: input.model || "seedream-5-pro",
+        model: sheetModel,
         references: own,
         label: `${el.name} · prop`,
       };

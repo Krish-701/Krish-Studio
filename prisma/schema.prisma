@@ -87,6 +87,10 @@ enum JobType {
   EXPORT_PACKAGE
   /// Re-sync a shot's clip to its voiceover
   LIPSYNC
+  /// Score the story / script out of 10 and, when asked, rewrite it until it scores 8.5+
+  STORY_SCORE
+  /// Full autonomous run: write → design sheets → frames → clips → sound → export
+  AUTOPILOT
 }
 
 enum JobStatus {
@@ -111,6 +115,7 @@ enum AgentKind {
   MOOD
   MONITOR
   AUDIO
+  WRITER
 }
 
 model Project {
@@ -123,7 +128,7 @@ model Project {
   format           String   @default("short")
   /// Target runtime in seconds, from 30s spots up to 3h features (10800).
   targetRuntimeSec Int      @default(60)
-  resolution       String   @default("1080p")
+  resolution       String   @default("720p")
   fps              Int      @default(24)
   language         String   @default("English")
   /// The user's idea / synopsis the writer expands
@@ -133,6 +138,12 @@ model Project {
   /// false while the new-film wizard is still open
   setupDone        Boolean  @default(true)
   wizardStep       Int      @default(0)
+  /// The user's standing brief for the agents: basic suggestions and the prompt they give the Director
+  brief            String?
+  /// Story score: { score, breakdown: [{ criterion, score, note }], strengths, fixes, at, rounds }
+  storyScore       Json?
+  /// Autopilot state: { status, stage, startedAt, message }
+  autopilot        Json?
   scriptText       String?
   /// Global style lock: { enabled, prompt, mood, tone, palette[], negative, referenceAssetIds[] }
   styleLock        Json     @default("{}")
@@ -152,6 +163,7 @@ model Project {
   messages   AgentMessage[]
   findings   AgentFinding[]
   memory     MemoryEntry[]
+  activity   ActivityLog[]
 }
 
 /// Acts are numbers on sequences; sequences group scenes (a 3-hour film has ~40-60 of them).
@@ -209,7 +221,7 @@ model Shot {
   speaker          String?
   shotType         String? // WIDE, MEDIUM, CLOSE_UP, ...
   cameraMove       String? // static, dolly-in, pan-left, ...
-  durationSec      Float     @default(4)
+  durationSec      Float     @default(5)
   prompt           String    @default("")
   negativePrompt   String?
   /// Per-shot style override; when set it replaces the project style lock for this shot.
@@ -465,4 +477,24 @@ model ShotElement {
   element   Element @relation(fields: [elementId], references: [id], onDelete: Cascade)
 
   @@id([shotId, elementId])
+}
+
+/// Human-readable project activity feed (Log tab): job lifecycle, agent turns, tool calls, Director summaries.
+model ActivityLog {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  /// job | agent | tool | user | system | summary
+  kind      String
+  /// info | warn | error | success
+  level     String   @default("info")
+  /// Agent name, "you" or "worker"
+  actor     String?
+  message   String
+  data      Json?
+  jobId     String?
+  shotId    String?
+
+  @@index([projectId, createdAt])
 }

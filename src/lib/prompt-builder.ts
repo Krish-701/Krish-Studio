@@ -1,6 +1,6 @@
 import type { Asset, Character, Element, Project, Scene, Shot } from "@prisma/client";
 import { db } from "./db";
-import { COLOR_PRESETS, imageModel, videoModel, VIDEO_MODELS, type ModelInfo } from "./generation/catalog";
+import { COLOR_PRESETS, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_VARIANT, DEFAULT_VIDEO_MODEL, imageModel, videoModel, VIDEO_MODELS, type ModelInfo } from "./generation/catalog";
 import type { ImageRequest, RefImage, VideoRequest } from "./generation/types";
 import { lastFrameAsset, paletteAsset, toRef } from "./media";
 import { planReferences, type Candidate, type RefPlan } from "./references";
@@ -188,8 +188,10 @@ const finish = (parts: (string | number | false | null | undefined)[]) =>
 
 export async function buildImageRequest(shotId: string, opts: { model?: string | null } = {}): Promise<{ req: ImageRequest; characters: CharWithRefs[]; style: StyleLock; plan: RefPlan }> {
   const shot = await loadShot(shotId);
-  const slug = opts.model || shot.imageModel || (shot.project.defaults as Record<string, string>)?.image || null;
+  const defaults = (shot.project.defaults as Record<string, string> | null) ?? {};
+  const slug = opts.model || shot.imageModel || defaults.image || DEFAULT_IMAGE_MODEL;
   const model = imageModel(slug);
+  const variant = slug === (defaults.image || DEFAULT_IMAGE_MODEL) ? defaults.imageVariant || (slug === DEFAULT_IMAGE_MODEL ? DEFAULT_IMAGE_VARIANT : undefined) : undefined;
   const { cands, chars, location, props, style } = await candidatesFor(shot, "image");
   const plan = planReferences(model, { kind: "image", candidates: cands });
   const looks = new Map(shot.characters.map((c) => [c.characterId, c.look]));
@@ -213,6 +215,7 @@ export async function buildImageRequest(shotId: string, opts: { model?: string |
       negativePrompt: [shot.negativePrompt, style.enabled ? style.negative : null].filter(Boolean).join(", ") || undefined,
       aspectRatio: shot.project.aspectRatio,
       model: slug,
+      variant,
       references: plan.refs,
       label: `${shot.scene?.heading ?? "SHOT"} · #${shot.order + 1}`,
     },
@@ -238,7 +241,7 @@ function videoText(shot: FullShot, chars: CharWithRefs[], style: StyleLock, plan
 }
 
 export function resolveVideoModel(shot: Shot & { project: Project }, override?: string | null): ModelInfo {
-  const slug = override || shot.videoModel || (shot.project.defaults as Record<string, string>)?.video || "bytedance-seedance-pro-2.5";
+  const slug = override || shot.videoModel || (shot.project.defaults as Record<string, string>)?.video || DEFAULT_VIDEO_MODEL;
   return videoModel(slug) ?? { ...VIDEO_MODELS[0], slug: slug || "auto" };
 }
 

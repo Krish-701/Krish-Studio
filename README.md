@@ -1,40 +1,62 @@
 # Krish Studio — AI film production
 
-Idea or script → storyboard → clips → timeline with audio → MP4, in the browser, from a 30-second ad to a 3-hour feature. A Director agent and four
-specialist sub-agents (Character Consistency, Mood & Tone, Generation Monitor, Audio) run the crew,
+Idea or script → storyboard → clips → timeline with audio → MP4, in the browser, from a 30-second ad to a 3-hour feature. A Director (master) agent and five
+specialist sub-agents (Script Doctor, Character Consistency, Mood & Tone, Generation Monitor, Audio) run the crew: they score your story,
+improve it to 8.5/10, then make the whole film on autopilot,
 and every generation goes through MCP tool calls — Magnific MCP first, with any other MCP server as a fallback.
 
-## Quick start
+## Run it
 
-Requirements: Node 20+, PostgreSQL, ffmpeg (Redis optional).
+You can run it on your own computer and in the cloud at the same time; each install has its own database and project folders.
+
+**On your computer** (Node 20+, ffmpeg, Docker Desktop):
 
 ```bash
-cp .env.example .env              # set DATABASE_URL (and REDIS_URL if you use Redis)
-docker compose up -d              # optional: local Postgres + Redis
-npm install
-npx prisma db push                # create tables
-npm run db:seed                   # optional: demo film "The Last Lighthouse"
-npm run dev                       # http://localhost:3000
+git clone https://github.com/radhakrishnanp-lgtm/Krish-Studio && cd Krish-Studio
+./scripts/start-local.sh                    # Windows: powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1
 ```
 
-Then open **Settings** and add:
+It creates `.env`, starts Postgres and Redis in Docker, sets up the database and opens http://localhost:3000.
+Put your keys in `.env` (or later in **Settings**): `LLM_API_KEY` (OpenRouter) and `MAGNIFIC_MCP_TOKEN` (Freepik / Magnific).
 
-| What | Where | Why |
-|---|---|---|
-| Magnific MCP access token | Settings → Generation backends → Magnific | Real images, video, voice, music, SFX, upscale, inpaint |
-| OpenAI-compatible base URL + API key + model | Settings → AI assistant | Director chat, AI script breakdown, sub-agents. Use a vision model so consistency/mood checks can look at frames |
+**In the cloud** (any Linux server with Docker):
 
-**OpenRouter + Qwen (or any reasoning model):** pick the *OpenRouter · Qwen 3.8 Flash* preset, paste your OpenRouter key, keep
-**Reasoning** on and press **Validate model**. Reasoning sends `reasoning: { enabled: true }` and every assistant turn's
-`reasoning_details` is stored verbatim and passed back unmodified, across tool calls and across conversation turns.
-Validate runs the model through everything the studio needs and saves the result:
+```bash
+git clone https://github.com/radhakrishnanp-lgtm/Krish-Studio && cd Krish-Studio
+cp .env.example .env && nano .env           # keys, SETTINGS_SECRET, APP_URL=https://your-domain
+./scripts/deploy-cloud.sh                   # docker compose up -d --build: app + Postgres + Redis
+```
+
+Run `git pull && ./scripts/deploy-cloud.sh` to update. The database and every project's folder live in Docker volumes and survive updates.
+Put HTTPS in front (Caddy, Nginx or your cloud's load balancer) and set `APP_URL` to that address.
+
+Manual setup still works: `cp .env.example .env`, `docker compose up -d postgres redis`, `npm install`, `npx prisma db push`, `npm run dev`.
+
+### The AI that runs the crew
+
+Default: **Qwen3.8 Omni Flash** on OpenRouter (`qwen/qwen3.8-omni-flash`, base URL `https://openrouter.ai/api/v1`), with
+`reasoning: { enabled: true }`, streaming (`"stream": true`), and every assistant turn's `reasoning_details` stored and passed back unmodified,
+across tool calls and conversation turns. It is multimodal, so it also checks frames. Change it any time in **Settings → AI assistant**
+(presets for other OpenRouter models, OpenAI, Anthropic, Gemini, Ollama…) or per agent. **Validate model** tests tool calling, reasoning
+pass-back, JSON and image input and saves the result:
 
 | Check | If it fails |
 |---|---|
 | Tool calling (call, result, answer) | Agents switch to prompted tools (tool calls written as JSON blocks) automatically |
 | Reasoning and passing `reasoning_details` back | Agents run without reasoning |
 | JSON output | JSON is pulled out of plain text |
-| Image input | Set a **vision model** (e.g. a Qwen-VL model) for frame checks; without one, consistency and mood checks are rule-based |
+| Image input | Set a **vision model** for frame checks; without one, consistency and mood checks are rule-based |
+
+### Models (Freepik / Magnific)
+
+| Use | Default | Notes |
+|---|---|---|
+| Frames, design sheets, contact sheets | GPT Image 2.5 · Flare (`gpt-2-mini`, variant `flare`) | Ask the Director for any other image model |
+| Video clips | Seedance 2.5 at 720p (`bytedance-seedance-pro-2.5`) | Up to 30 s, multi-shot, many references |
+| Alternative video | Wan 3.0 Prime at 720p (`wan-3-0-prime`) | Beta in the catalog; up to 30 s, multi-shot |
+
+The agents can list every model (`list_models`) and switch the project's defaults (`set_default_models`) when a story needs more references,
+longer takes or sound. **Settings → Models → Sync from Magnific** pulls the live catalog.
 
 Without either, the app still works end to end: scripts are broken down by the rule-based parser,
 and the built-in **offline preview renderer** produces placeholder frames, Ken-Burns clips and tones so you can test the whole pipeline
@@ -42,6 +64,31 @@ for free. Turn it off in Settings to require real generations.
 
 Production: `npm run build && npm start` (or the `Dockerfile`). With `REDIS_URL` set, jobs go through BullMQ —
 run `npm run worker` as a separate process, or set `INLINE_WORKER=1` to run the worker inside Next.js.
+
+## Autopilot: you set the runtime and the story, the agents make the film
+
+1. **Story score.** The Script Doctor scores your idea, outline or script out of 10 on premise, structure, characters, conflict,
+   visual storytelling, emotion, originality, fit to the runtime and clarity. **Under 6** it stops and tells you what to change.
+   **6 to 8.5**: *Improve to 8.5+* rewrites the treatment round by round (keeping your idea, cast and brief) until it scores 8.5 or more.
+2. **Full autopilot.** Once the story is ready: write (outline → scenes → shots) → character and set design sheets → frames →
+   clips → voices and music → MP4 export, each stage starting when the previous one's jobs finish. Pause and resume any time.
+3. **Shot lengths are the agent's call.** You only set the total runtime. For each scene the writer decides how many shots it needs and
+   how long each runs, from 3 to 15 seconds (quick cuts for action, longer holds for emotion and reveals); the lengths are then fitted so the
+   film lands on your runtime.
+4. **Your brief.** On the Autopilot page (and the last wizard step) write your basic suggestions and prompt for the crew. Every agent reads it.
+5. **It learns from you, per project.** Every message you send is checked for lasting preferences and corrections ("less handheld",
+   "Maya never smiles", "shorter shots in fights"); they are saved as *lessons* in the project's memory, which every agent and the writer follow.
+6. **Talk to it any time.** The Director (master agent) answers mid-production, changes the plan, and delegates to sub-agents:
+   Script Doctor, Character Consistency, Mood & Tone, Generation Monitor and Audio. Ask it to study or edit anything.
+7. **Progress updates and the Log tab.** The Director posts a short plain-language update in its chat every few minutes while work is running
+   (`SUMMARY_INTERVAL_MIN`). The **Log** tab shows everything live: jobs started, finished, retried and failed, every agent message and tool call,
+   automatic check findings, your messages and the summaries. Filter, export or clear it.
+
+### Every project is its own workspace
+
+Each project has its own folder, `storage/<projectId>/`, holding its media plus a readable snapshot that is refreshed as work happens:
+`project.json` (settings, models, brief, story score, autopilot state), `story.md` (story, outline, scenes, every shot with its length),
+`memory.md` (what the crew remembers, including the lessons you taught it) and `activity.log`. Deleting a project deletes its folder.
 
 ## How it works
 

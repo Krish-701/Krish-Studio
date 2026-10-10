@@ -32,6 +32,9 @@ export interface ModelInfo {
   tier?: "sota" | "recommended";
   expectedSec?: number;
   private?: boolean;
+  /** Image model variants (GPT Image 2.5: flare | sunburst). */
+  variants?: string[];
+  defaultVariant?: string;
 }
 
 const range = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
@@ -55,11 +58,16 @@ export const IMAGE_MODELS: ModelInfo[] = [
   { slug: "imagen-nano-banana-2-lite", name: "Nano Banana 2 Lite", note: "Cheap drafts", kind: "image", refLimits: IMG_REFS(["image", "style", "character", "product"]), maxRefs: 12, tier: "recommended", expectedSec: 9 },
   { slug: "flux-2", name: "Flux.2 Pro", note: "Multi-reference", kind: "image", refLimits: IMG_REFS(["image", "style", "character", "product"]), maxRefs: 12, expectedSec: 20 },
   { slug: "flux-kontext-high", name: "Flux.1 Kontext Max", note: "Edits that keep identity", kind: "image", refLimits: IMG_REFS(["image", "style", "character", "product"]), maxRefs: 12, expectedSec: 11 },
-  { slug: "gpt-2-mini", name: "GPT Image 2.5", note: "Text & layout, contact sheets", kind: "image", refLimits: IMG_REFS(["image", "style", "character", "product"]), maxRefs: 12, expectedSec: 32 },
+  { slug: "gpt-2-mini", name: "GPT Image 2.5 · Flare", note: "Default · ChatGPT image model, Flare variant · text, layout, contact sheets", kind: "image", refLimits: IMG_REFS(["image", "style", "character", "product"]), maxRefs: 12, expectedSec: 32, variants: ["flare", "sunburst"], defaultVariant: "flare", tier: "recommended" },
   { slug: "recraft-v4-1", name: "Recraft V4.1", note: "Pure text-to-image", kind: "image", refLimits: { style: 1 }, maxRefs: 1, expectedSec: 11 },
 ];
 
 export const VIDEO_MODELS: ModelInfo[] = [
+  {
+    slug: "wan-3-0-prime", name: "Wan 3.0 Prime", note: "Beta · up to 30s · 10 image + 5 video + 5 audio refs · multi-shot",
+    kind: "video", refLimits: { image: 10, video: 5, audio: 5, character: 1, product: 1, style: 1, color: 1, effect: 1 }, durations: range(2, 30), resolutions: ["1080p", "720p", "480p"], defaultResolution: "720p",
+    aspectRatios: WIDE_ASPECTS, startFrame: true, endFrame: true, keyframesExclusive: true, sound: true, multishot: { limit: 5, min: 2, max: 15 }, cameraMotions: SEEDANCE_CAMERA, expectedSec: 240, private: true,
+  },
   { slug: "auto", name: "Auto", kind: "video", refLimits: { image: 3, character: 3 }, durations: [5, 10], startFrame: true },
   {
     slug: "bytedance-seedance-pro-2.5", name: "Seedance 2.5", note: "Best overall · up to 30s · 30 image + 10 video + 10 audio refs · multi-shot",
@@ -181,18 +189,18 @@ export const LOOKS: { id: string; name: string; desc: string; prompt: string; co
  * Film formats for the new-film wizard. Average shot length sets the shot count for a runtime
  * (a 3-hour feature at ~5s per shot is ~2,000 shots; a 30s spot is ~10).
  */
-export const FORMATS: { id: string; name: string; desc: string; runtime: number; min: number; max: number; avgShot: number; acts: number }[] = [
-  { id: "spot", name: "Ad / Spot", desc: "A quick, punchy piece built around one idea.", runtime: 30, min: 15, max: 90, avgShot: 2.5, acts: 1 },
-  { id: "short", name: "Short Film", desc: "A cinematic short with a three-act shape.", runtime: 60, min: 30, max: 900, avgShot: 4.5, acts: 3 },
-  { id: "action", name: "Action Film", desc: "A set piece with clear geography, cut on the action.", runtime: 120, min: 30, max: 1200, avgShot: 3, acts: 3 },
-  { id: "music_video", name: "Music Video", desc: "Cut to your song, performance and story intercut.", runtime: 180, min: 30, max: 600, avgShot: 3, acts: 1 },
-  { id: "episode", name: "Series Episode", desc: "A 20–60 minute episode with A and B plots.", runtime: 1800, min: 600, max: 3600, avgShot: 4.5, acts: 4 },
-  { id: "feature", name: "Feature Film", desc: "A full movie, 75 minutes to 3 hours, in acts and sequences.", runtime: 5400, min: 1800, max: 10800, avgShot: 5, acts: 3 },
+export const FORMATS: { id: string; name: string; desc: string; runtime: number; min: number; max: number; typicalShot: number; pace: string; acts: number }[] = [
+  { id: "spot", name: "Ad / Spot", desc: "A quick, punchy piece built around one idea.", runtime: 30, min: 15, max: 90, typicalShot: 3.5, pace: "fast, punchy cuts", acts: 1 },
+  { id: "short", name: "Short Film", desc: "A cinematic short with a three-act shape.", runtime: 60, min: 30, max: 900, typicalShot: 6, pace: "story-led, holds on emotion", acts: 3 },
+  { id: "action", name: "Action Film", desc: "A set piece with clear geography, cut on the action.", runtime: 120, min: 30, max: 1200, typicalShot: 4, pace: "quick cuts in action, longer holds to set geography", acts: 3 },
+  { id: "music_video", name: "Music Video", desc: "Cut to your song, performance and story intercut.", runtime: 180, min: 30, max: 600, typicalShot: 4, pace: "cut to the beat", acts: 1 },
+  { id: "episode", name: "Series Episode", desc: "A 20–60 minute episode with A and B plots.", runtime: 1800, min: 600, max: 3600, typicalShot: 6, pace: "dialogue coverage with room to breathe", acts: 4 },
+  { id: "feature", name: "Feature Film", desc: "A full movie, 75 minutes to 3 hours, in acts and sequences.", runtime: 5400, min: 1800, max: 10800, typicalShot: 7, pace: "cinematic, from 3s inserts to 15s long takes", acts: 3 },
 ];
 
 export function estimateShots(format: string, runtimeSec: number) {
   const f = FORMATS.find((x) => x.id === format) ?? FORMATS[1];
-  return Math.max(3, Math.round(runtimeSec / f.avgShot));
+  return Math.max(3, Math.round(runtimeSec / f.typicalShot));
 }
 
 export const SHOT_TYPES = ["EXTREME_WIDE", "WIDE", "FULL", "MEDIUM", "MEDIUM_CLOSE", "CLOSE_UP", "EXTREME_CLOSE_UP", "OVER_SHOULDER", "POV", "INSERT", "AERIAL"];
@@ -204,6 +212,13 @@ export const ASPECT_RATIOS = ["16:9", "21:9", "9:16", "1:1", "4:3", "3:4", "2:3"
 let live: { image: ModelInfo[]; video: ModelInfo[] } | null = null;
 
 /** Installs a synced catalog (called with AppSettings.modelCatalog). Built-in entries fill gaps. */
+/** Studio defaults: GPT Image 2.5 (Flare) for frames, Seedance 2.5 at 720p for clips, Wan 3.0 Prime as the alternative. */
+export const DEFAULT_IMAGE_MODEL = "gpt-2-mini";
+export const DEFAULT_IMAGE_VARIANT = "flare";
+export const DEFAULT_VIDEO_MODEL = "bytedance-seedance-pro-2.5";
+export const ALT_VIDEO_MODEL = "wan-3-0-prime";
+export const DEFAULT_RESOLUTION = "720p";
+
 export function setLiveCatalog(cat: { image?: ModelInfo[]; video?: ModelInfo[] } | null) {
   live = cat ? { image: cat.image ?? [], video: cat.video ?? [] } : null;
 }
@@ -212,7 +227,7 @@ function merged(builtin: ModelInfo[], synced?: ModelInfo[]) {
   if (!synced?.length) return builtin;
   const bySlug = new Map(synced.map((m) => [m.slug, m]));
   // Keep our notes on known models; take the live capabilities.
-  const known = builtin.map((b) => (bySlug.has(b.slug) ? { ...bySlug.get(b.slug)!, note: b.note, name: b.name } : b));
+  const known = builtin.map((b) => (bySlug.has(b.slug) ? { ...bySlug.get(b.slug)!, note: b.note, name: b.name, tier: b.tier ?? bySlug.get(b.slug)!.tier, variants: bySlug.get(b.slug)!.variants ?? b.variants, defaultVariant: b.defaultVariant ?? bySlug.get(b.slug)!.defaultVariant } : b));
   const extra = synced.filter((m) => !builtin.some((b) => b.slug === m.slug) && !m.private);
   return [...known, ...extra];
 }
@@ -262,6 +277,8 @@ export function fromMagnific(entry: Record<string, any>, kind: "image" | "video"
     tier: entry.agentRecommendation?.tier,
     expectedSec: entry.expectedGenerationTime ? Number(entry.expectedGenerationTime) : undefined,
     private: !!entry.private,
+    variants: Array.isArray(entry.variants) && entry.variants.length ? entry.variants.map((v: any) => String(typeof v === "string" ? v : v.id ?? v.slug ?? v.name)) : undefined, // eslint-disable-line @typescript-eslint/no-explicit-any
+    defaultVariant: entry.defaultVariant ? String(entry.defaultVariant) : undefined,
   };
 }
 

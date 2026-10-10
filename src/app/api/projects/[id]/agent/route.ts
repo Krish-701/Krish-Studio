@@ -4,6 +4,7 @@ import { runAgent } from "@/lib/agents/runner";
 import { enqueue } from "@/lib/queue";
 import { errorMessage } from "@/lib/utils";
 import { publish } from "@/lib/events";
+import { learnFromFeedback } from "@/lib/agents/learn";
 
 export const maxDuration = 300;
 
@@ -33,7 +34,9 @@ export const POST = route(async (req: Request, { params }: Params<"id">) => {
   }
   const message = String(b.message || "").trim();
   if (!message) return fail("Empty message");
-  const agent = ["DIRECTOR", "CONSISTENCY", "MOOD", "MONITOR", "AUDIO"].includes(b.agent) ? b.agent : "DIRECTOR";
+  const agent = ["DIRECTOR", "CONSISTENCY", "MOOD", "MONITOR", "AUDIO", "WRITER"].includes(b.agent) ? b.agent : "DIRECTOR";
+  // The crew learns from every message: lasting preferences become lessons in this project's memory.
+  learnFromFeedback(id, message).catch(() => {});
   try {
     if (agent === "DIRECTOR") return ok({ reply: await runAgent({ projectId: id, agent, input: message, conversation: true, signal: req.signal }) });
     // Talking to a sub-agent directly: log the exchange in the chat.

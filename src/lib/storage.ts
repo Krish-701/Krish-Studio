@@ -12,7 +12,7 @@ export interface StoredFile {
   url: string;
 }
 
-const LOCAL_ROOT = path.resolve(process.cwd(), "storage");
+const LOCAL_ROOT = path.resolve(process.env.STORAGE_DIR || path.join(process.cwd(), "storage"));
 const driver = (process.env.STORAGE_DRIVER || "local").toLowerCase();
 
 let s3: S3Client | null = null;

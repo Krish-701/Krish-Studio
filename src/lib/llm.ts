@@ -134,7 +134,8 @@ export async function chat(messages: ChatMessage[], opts: ChatOpts = {}): Promis
   const cfg = await llmConfig(opts.agent);
   if (!cfg) throw new LlmNotConfigured();
   const reasoning = opts.reasoning ?? cfg.reasoning;
-  const stream = !!(opts.onDelta || opts.onReasoning);
+  // OpenRouter calls always stream ("stream": true), so long reasoning turns never hit idle timeouts.
+  const stream = !!(opts.onDelta || opts.onReasoning || cfg.openrouter || process.env.LLM_STREAM === "1");
   const body: Record<string, unknown> = {
     model: opts.model || cfg.model,
     messages: wireMessages(messages, reasoning),

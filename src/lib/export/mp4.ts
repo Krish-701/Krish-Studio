@@ -5,7 +5,7 @@ import os from "os";
 import path from "path";
 import { db } from "../db";
 import { dims, ffmpeg, tmpDir } from "../ffmpeg";
-import { localPath, newKey, publicUrl, putFile, storageDriver } from "../storage";
+import { localPath, localRoot, newKey, publicUrl, putFile, storageDriver } from "../storage";
 import { clipLen } from "../timeline";
 
 const XFADE: Record<string, string> = { fade: "fade", crossfade: "dissolve", dissolve: "dissolve", dip: "fadeblack", fadeblack: "fadeblack", wipe: "wipeleft", slide: "slideleft" };
@@ -25,7 +25,7 @@ type Mixable = { file: string; offset: number; len: number; inPoint?: number; vo
 
 const hash = (...parts: unknown[]) => createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 20);
 const exists = (f: string) => fs.access(f).then(() => true, () => false);
-const exportCacheDir = (projectId: string) => path.join(process.cwd(), "storage", "cache", projectId);
+const exportCacheDir = (projectId: string) => path.join(localRoot, "cache", projectId);
 
 /** Deletes every cached conform / transition / mix file of a project (storage/cache/<projectId>). */
 export async function clearExportCache(projectId: string) {

@@ -9,7 +9,7 @@ import { Input, Label, NativeSelect, Textarea } from "@/components/ui/input";
 import { Switch, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/misc";
 import { Badge } from "@/components/ui/badge";
 import { api, fetcher } from "@/lib/client";
-import { CAMERA_MOTIONS, SHOT_TYPES } from "@/lib/generation/catalog";
+import { CAMERA_MOTIONS, DEFAULT_VIDEO_MODEL, SHOT_TYPES } from "@/lib/generation/catalog";
 import { MotionPanel, CLIP_MODES, RewriteButton } from "./shot-motion";
 import { useModels } from "./use-models";
 import type { StyleLock } from "@/lib/prompt-builder";
@@ -243,7 +243,7 @@ function ShotEditor({ shotId }: { shotId: string }) {
               </div>
               <div className="space-y-1.5">
                 <Label>Seconds</Label>
-                <Input type="number" min={1} max={30} step={0.5} value={f.durationSec} onChange={(e) => set({ durationSec: Number(e.target.value) })} />
+                <Input type="number" min={3} max={15} step={0.5} value={f.durationSec} onChange={(e) => set({ durationSec: Number(e.target.value) })} />
               </div>
             </div>
             <div className="space-y-1.5">
@@ -268,7 +268,7 @@ function ShotEditor({ shotId }: { shotId: string }) {
             </div>
           </TabsContent>
           <TabsContent value="motion">
-            <MotionPanel shot={shot} f={f} set={set} videoModel={f.videoModel || (state!.project.defaults as Record<string, string>)?.video || "bytedance-seedance-pro-2.5"} />
+            <MotionPanel shot={shot} f={f} set={set} videoModel={f.videoModel || (state!.project.defaults as Record<string, string>)?.video || DEFAULT_VIDEO_MODEL} />
           </TabsContent>
           <TabsContent value="prompt" className="space-y-3">
             <div className="space-y-1.5">

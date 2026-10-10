@@ -18,6 +18,12 @@ import { consistencyCheck, moodCheck, monitorSweep } from "@/lib/agents/checks";
 import { getSettings } from "@/lib/settings";
 import { McpToolError } from "@/lib/mcp/client";
 import { errorMessage } from "@/lib/utils";
+import { jobWords, logActivity, shortError } from "@/lib/activity";
+import { maybeSummarize } from "@/lib/agents/summary";
+import { runAutopilot } from "./autopilot";
+import { improveStory, scoreStory } from "@/lib/script/score";
+
+const deferredJobs = new Set<string>();
 
 /**
  * Executes one Job row. Progress is written to the DB (throttled) and streamed over the event bus.
@@ -29,6 +35,12 @@ export async function processJob(jobId: string) {
   await db.job.update({ where: { id: jobId }, data: { status: "RUNNING", attempts: { increment: 1 }, step: "Starting", progress: 1, error: null } });
   emit(job, { status: "RUNNING", progress: 1, step: "Starting" });
   setShotStatus(job, "GENERATING");
+  const what = await jobSubject(job);
+  const log = (level: "info" | "warn" | "error" | "success", message: string, data?: unknown) =>
+    logActivity(job.projectId, { kind: "job", level, actor: "worker", message, data, jobId: job.id, shotId: job.shotId });
+  // A deferred job comes back every few seconds; log its start and wait only once.
+  const wasDeferred = deferredJobs.has(jobId);
+  if (!wasDeferred) await log("info", `${what} started${job.attempts > 0 ? ` (attempt ${job.attempts + 1})` : ""}`);
 
   let lastWrite = 0;
   const ctx: GenContext = {
@@ -47,7 +59,7 @@ export async function processJob(jobId: string) {
   };
 
   try {
-    const output = await run(job, ctx);
+    const output = await run(job, ctx).finally(() => deferredJobs.delete(jobId));
     const fresh = await db.job.findUnique({ where: { id: jobId } });
     if (fresh?.status === "CANCELED") return;
     const deferred = (output as { __deferred?: number; step?: string } | undefined)?.__deferred;
@@ -57,10 +69,14 @@ export async function processJob(jobId: string) {
       emit(job, { status: "QUEUED", progress: 0, step: (output as { step?: string }).step ?? "Waiting" });
       setShotStatus(job, "QUEUED");
       await requeue(jobId, deferred);
+      if (!wasDeferred) await log("info", `${what} deferred: ${(output as { step?: string }).step ?? "waiting"}`);
+      deferredJobs.add(jobId);
       return;
     }
     await db.job.update({ where: { id: jobId }, data: { status: "SUCCEEDED", progress: 100, step: "Done", output: (output ?? {}) as Prisma.InputJsonValue } });
     emit(job, { status: "SUCCEEDED", progress: 100, step: "Done" });
+    await log("success", await successText(job, what, output), output ?? undefined);
+    maybeSummarize(job.projectId).catch(() => {});
   } catch (e) {
     const msg = errorMessage(e);
     const fresh = await db.job.findUnique({ where: { id: jobId } });
@@ -72,14 +88,81 @@ export async function processJob(jobId: string) {
       await db.job.update({ where: { id: jobId }, data: { error: msg } });
       await requeue(jobId, delay);
       setShotStatus(job, "QUEUED");
+      await log("warn", `${what} failed (attempt ${fresh.attempts}/${fresh.maxAttempts}), retrying in ${Math.round(delay / 1000)}s: ${shortError(msg, 200)}`, { error: msg });
       return;
     }
     console.error(`[job ${jobId}] failed:`, msg);
     await db.job.update({ where: { id: jobId }, data: { status: "FAILED", error: msg, step: "Failed" } });
     emit(job, { status: "FAILED", progress: fresh.progress, step: "Failed", error: msg });
     setShotStatus(job, "FAILED");
+    await log("error", `${what} failed: ${shortError(msg)}`, { error: msg, attempts: fresh.attempts });
     monitorSweep(job.projectId).catch(() => {});
+    maybeSummarize(job.projectId).catch(() => {});
   }
+}
+
+/** "Frame for shot #4", "Sequence writing (seq 3)", "Film export"… */
+async function jobSubject(job: Job) {
+  const base = jobWords(job.type);
+  try {
+    if (job.shotId) {
+      const shot = await db.shot.findUnique({ where: { id: job.shotId }, select: { order: true } });
+      if (shot) return `${base} for shot #${shot.order + 1}`;
+    }
+    const input = (job.input ?? {}) as { sequenceId?: string; shotIds?: string[]; agent?: string };
+    if (job.type === "WRITE_SEQUENCE" && input.sequenceId) {
+      const seq = await db.sequence.findUnique({ where: { id: input.sequenceId }, select: { index: true, title: true } });
+      if (seq) return `Writing sequence ${seq.index + 1} “${seq.title}”`;
+    }
+    if (input.shotIds?.length) return `${base} (${input.shotIds.length} shots)`;
+    if (job.type === "AGENT_CHECK" && input.agent) return `${base} (${input.agent.toLowerCase()})`;
+  } catch {}
+  return base;
+}
+
+/** Human summary of a finished job. */
+async function successText(job: Job, what: string, output: unknown) {
+  const o = (output ?? {}) as Record<string, unknown>;
+  const shotNo = what.match(/shot #\d+/)?.[0];
+  try {
+    switch (job.type) {
+      case "IMAGE":
+      case "UPSCALE":
+      case "INPAINT":
+        return shotNo ? `Frame ready for ${shotNo}` : `${what} done`;
+      case "VIDEO":
+        return `Clip ready for ${shotNo ?? "shot"}${o.durationSec ? ` (${Number(o.durationSec).toFixed(1)}s)` : ""}`;
+      case "TTS":
+        return `Voiceover ready${shotNo ? ` for ${shotNo}` : ""}${o.durationSec ? ` (${Number(o.durationSec).toFixed(1)}s)` : ""}`;
+      case "PARSE_SCRIPT":
+        return `Script broken down: ${o.scenes} scenes, ${o.shots} shots, ${o.characters} characters`;
+      case "WRITE_OUTLINE":
+        return `Outline written: ${o.acts} acts, ${o.sequences} sequences`;
+      case "WRITE_SEQUENCE": {
+        const seqId = (job.input as { sequenceId?: string })?.sequenceId;
+        const seq = seqId ? await db.sequence.findUnique({ where: { id: seqId }, select: { index: true } }) : null;
+        const shots = seqId ? await db.shot.count({ where: { scene: { sequenceId: seqId } } }) : 0;
+        return `Wrote sequence ${seq ? seq.index + 1 : "?"}: ${o.scenes ?? "?"} scenes, ${shots} shots`;
+      }
+      case "CONTACT_SHEET":
+        return `Contact sheet split into ${o.frames ?? "?"} frames`;
+      case "MULTISHOT_VIDEO":
+        return `Multi-shot clip ready (${o.shots ?? "?"} shots${o.durationSec ? `, ${Number(o.durationSec).toFixed(1)}s` : ""})`;
+      case "DESIGN_SHEET":
+        return `Design sheet ready${o.angles ? ` (${o.angles} angles)` : ""}`;
+      case "EXPORT_MP4":
+        return "Film exported to MP4";
+      case "EXPORT_PDF":
+        return "Storyboard PDF exported";
+      case "EXPORT_PACKAGE":
+        return "Project package exported";
+      case "STORY_SCORE":
+        return `Story scored ${Number(o.score).toFixed(1)}/10${o.rounds ? ` after ${o.rounds} rewrite(s)` : ""}`;
+      case "AUTOPILOT":
+        return o.done ? "Autopilot finished" : o.needsInput ? `Autopilot waiting for you (story ${Number(o.score).toFixed(1)}/10)` : "Autopilot stopped";
+    }
+  } catch {}
+  return `${what} done`;
 }
 
 function emit(job: Job, p: { status: string; progress: number; step: string; error?: string }) {
@@ -265,6 +348,14 @@ async function run(job: Job, ctx: GenContext): Promise<unknown> {
     case "EXTEND_VIDEO":
     case "LIPSYNC":
       return runLongform(job, ctx);
+
+    case "AUTOPILOT":
+      return runAutopilot(job, ctx);
+
+    case "STORY_SCORE": {
+      const i = input as { improve?: boolean; target?: number };
+      return i.improve ? improveStory(job.projectId, { target: i.target, onProgress: ctx.onProgress }) : scoreStory(job.projectId);
+    }
 
     case "AGENT_CHECK": {
       if (input.agent === "MONITOR") await monitorSweep(job.projectId);

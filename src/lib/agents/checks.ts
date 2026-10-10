@@ -8,6 +8,8 @@ import { memoryPrompt } from "../memory";
 import { effectiveStyle, shotCharacters, styleText } from "../prompt-builder";
 import { localPath } from "../storage";
 import type { AgentKind } from "@prisma/client";
+import { logActivity } from "../activity";
+import { AGENTS } from "./definitions";
 
 /**
  * Automatic sub-agent checks run after each generation (when "auto agents" is on).
@@ -38,6 +40,15 @@ async function addFinding(projectId: string, shotId: string | null, agent: Agent
     data: { projectId, shotId, agent, severity, message, suggestion, fix: fixPrompt ? { action: "regenerate_image", prompt: fixPrompt } : undefined },
   });
   publish(projectId, { type: "finding", finding: f as never });
+  const shot = shotId ? await db.shot.findUnique({ where: { id: shotId }, select: { order: true } }).catch(() => null) : null;
+  await logActivity(projectId, {
+    kind: "agent",
+    level: severity === "error" ? "error" : "warn",
+    actor: AGENTS[agent as keyof typeof AGENTS]?.name ?? agent,
+    message: `${shot ? `Shot #${shot.order + 1}: ` : ""}${message}`,
+    data: { findingId: f.id, severity, suggestion, fixPrompt },
+    shotId,
+  });
   return f;
 }
 

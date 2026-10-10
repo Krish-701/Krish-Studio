@@ -6,6 +6,8 @@ import { enqueue } from "../queue";
 import * as svc from "../services";
 import type { StyleLock } from "../prompt-builder";
 import { deleteMemory, listMemory, writeMemory } from "../memory";
+import { scoreStory } from "../script/score";
+import { pauseAutopilot, startAutopilot } from "@/worker/autopilot";
 
 export interface ToolCtx {
   projectId: string;
@@ -81,7 +83,7 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
         shot: str("Shot id or number"), title: str(""), description: str(""), prompt: str("Image generation prompt"), negativePrompt: str(""),
         shotType: str("EXTREME_WIDE|WIDE|FULL|MEDIUM|MEDIUM_CLOSE|CLOSE_UP|EXTREME_CLOSE_UP|OVER_SHOULDER|POV|INSERT|AERIAL"),
         cameraMove: str("static|pushIn|pullOut|panLeft|panRight|tiltUp|tiltDown|truckLeft|truckRight|craneUp|craneDown|orbitLeft|orbitRight|handheld"),
-        durationSec: num("2-15"), dialogue: str(""), speaker: str(""), imageModel: str("image model slug"), videoModel: str("video model slug"),
+        durationSec: num("3-15 seconds, chosen from the story"), dialogue: str(""), speaker: str(""), imageModel: str("image model slug"), videoModel: str("video model slug"),
         characters: strArr("Names of characters in frame (replaces the list)"),
         motionPrompt: str("How the shot moves: action and camera, for the video model"),
         refMode: str("auto | frame (animate the storyboard frame) | reference (identity references, frame as a reference) | text"),
@@ -97,6 +99,7 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
       void _s;
       const allowed = ["title", "description", "prompt", "negativePrompt", "shotType", "cameraMove", "durationSec", "dialogue", "speaker", "imageModel", "videoModel", "styleOverride", "motionPrompt", "refMode", "continuity", "colorPreset"];
       const data = Object.fromEntries(Object.entries(rest).filter(([k]) => allowed.includes(k)));
+      if (data.durationSec != null) data.durationSec = Math.min(15, Math.max(3, Number(data.durationSec) || 5));
       await db.shot.update({ where: { id }, data });
       if (characters) await svc.setShotCharacters(c.projectId, id, characters);
       publish(c.projectId, { type: "refresh", scope: "shots" });
@@ -348,7 +351,7 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
       "Add or update a shared memory entry so every agent (and future conversations) remember it. Use for lasting decisions, user preferences, character/continuity facts and style rules, not for progress updates.",
       {
         key: str("Short unique name, e.g. 'maya-wardrobe'. Reusing a key updates that entry."), content: str("The fact, in one to three sentences"),
-        category: str("decision|preference|character|style|continuity|note"), mode: str("replace (default) or append"),
+        category: str("lesson|decision|preference|character|style|continuity|note (lesson = something the filmmaker taught you)"), mode: str("replace (default) or append"),
         pinned: { type: "boolean", description: "Pin so it always stays at the top" },
         expectedVersion: num("Optional: the version you read; the write fails if someone changed it since"),
       },
@@ -363,14 +366,80 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
     schema: S("Delete a shared memory entry that is wrong or no longer true.", { key: str("Entry key") }, ["key"]),
     impl: async (a, c) => ({ deleted: await deleteMemory(c.projectId, a.key) }),
   },
+  score_story: {
+    schema: S("Score the story (idea, outline or script) out of 10 on premise, structure, characters, conflict, visuals, emotion, originality, fit and clarity. Below 6 the filmmaker must change it; 8.5+ is ready for autopilot.", {}),
+    impl: async (_a, c) => {
+      const s = await scoreStory(c.projectId);
+      return { score: s.score, verdict: s.verdict, breakdown: s.breakdown.map((b) => `${b.name} ${b.score}: ${b.note}`), fixes: s.fixes, method: s.method };
+    },
+  },
+  improve_story: {
+    schema: S("Have the Script Doctor rewrite the treatment round by round until it scores 8.5+ (runs as a job).", { target: num("Target score, default 8.5") }),
+    impl: async (a, c) => {
+      const job = await enqueue({ projectId: c.projectId, type: "STORY_SCORE", input: { improve: true, target: a.target ?? 8.5 }, maxAttempts: 1 });
+      return { queued: job.id };
+    },
+  },
+  start_autopilot: {
+    schema: S("Run the whole production on its own: story gate (score, improve to 8.5+), write, design sheets, frames, clips, voices and music, export. Use force only when the filmmaker said to start anyway.", { force: { type: "boolean", description: "Start even if the story is under 8.5" }, from: str("Optional stage to start from: score|write|design|frames|clips|sound|export") }),
+    impl: async (a, c) => {
+      const r = await startAutopilot(c.projectId, { force: !!a.force, from: a.from });
+      return { state: r.state };
+    },
+  },
+  pause_autopilot: {
+    schema: S("Pause the autopilot (jobs already queued keep running).", {}),
+    impl: async (_a, c) => ({ state: await pauseAutopilot(c.projectId) }),
+  },
+  list_models: {
+    schema: S("List the Freepik/Magnific image and video models with what they support (references, durations, resolutions, multi-shot) and the project's current defaults.", { kind: str("image | video | both (default)") }),
+    impl: async (a, c) => {
+      const { imageModels, videoModels } = await import("../generation/catalog");
+      const p = await db.project.findUniqueOrThrow({ where: { id: c.projectId }, select: { defaults: true, resolution: true } });
+      const brief = (m: import("../generation/catalog").ModelInfo) => ({
+        slug: m.slug, name: m.name, note: m.note, refs: m.refLimits, durations: m.durations?.length ? `${Math.min(...m.durations)}-${Math.max(...m.durations)}s` : undefined,
+        resolutions: m.resolutions, variants: m.variants, multishot: m.multishot, startFrame: m.startFrame, endFrame: m.endFrame, sound: m.sound, beta: m.private || undefined,
+      });
+      return {
+        defaults: p.defaults, resolution: p.resolution,
+        ...(a.kind !== "video" ? { image: imageModels().filter((m) => m.slug !== "auto").map(brief) } : {}),
+        ...(a.kind !== "image" ? { video: videoModels().filter((m) => m.slug !== "auto").map(brief) } : {}),
+      };
+    },
+  },
+  set_default_models: {
+    schema: S("Choose the project's default image and video models (Freepik/Magnific slugs from list_models) and video resolution. Pick per the story's needs: references, durations, multi-shot, sound, cost.", {
+      image: str("Image model slug, e.g. gpt-2-mini"), imageVariant: str("Image variant, e.g. flare"), video: str("Video model slug, e.g. bytedance-seedance-pro-2.5 or wan-3-0-prime"), resolution: str("720p | 1080p | 480p"), reason: str("Why, in one sentence"),
+    }),
+    impl: async (a, c) => {
+      const { imageModel, videoModel } = await import("../generation/catalog");
+      if (a.image && !imageModel(a.image)) return { error: `Unknown image model ${a.image}. Use list_models.` };
+      if (a.video && !videoModel(a.video)) return { error: `Unknown video model ${a.video}. Use list_models.` };
+      const p = await db.project.findUniqueOrThrow({ where: { id: c.projectId } });
+      const defaults = { ...((p.defaults as Record<string, string>) ?? {}), ...(a.image ? { image: a.image } : {}), ...(a.imageVariant !== undefined ? { imageVariant: a.imageVariant } : {}), ...(a.video ? { video: a.video } : {}) };
+      await db.project.update({ where: { id: c.projectId }, data: { defaults, ...(a.resolution ? { resolution: a.resolution } : {}) } });
+      publish(c.projectId, { type: "refresh", scope: "project" });
+      return { ok: true, defaults, resolution: a.resolution ?? p.resolution };
+    },
+  },
+  set_brief: {
+    schema: S("Update the filmmaker's standing brief (their basic suggestions and prompt to the crew). Only when they ask; append instead of replacing unless told otherwise.", { brief: str("The text"), mode: str("append (default) | replace") }, ["brief"]),
+    impl: async (a, c) => {
+      const p = await db.project.findUniqueOrThrow({ where: { id: c.projectId }, select: { brief: true } });
+      const brief = a.mode === "replace" || !p.brief ? a.brief : `${p.brief.trim()}\n${a.brief}`;
+      await db.project.update({ where: { id: c.projectId }, data: { brief } });
+      publish(c.projectId, { type: "refresh", scope: "project" });
+      return { ok: true };
+    },
+  },
   spawn_subagent: {
     schema: S("Delegate a task to a specialist sub-agent and get its report back.", {
-      agent: str("CONSISTENCY | MOOD | MONITOR | AUDIO"), task: str("What the sub-agent should do"),
+      agent: str("WRITER (Script Doctor) | CONSISTENCY | MOOD | MONITOR | AUDIO"), task: str("What the sub-agent should do, with the context it needs"),
     }, ["agent", "task"]),
     impl: async (a, c) => {
       if (c.depth > 1) return { error: "Sub-agents cannot spawn further sub-agents." };
       const kind = String(a.agent).toUpperCase();
-      if (!["CONSISTENCY", "MOOD", "MONITOR", "AUDIO"].includes(kind)) return { error: "Unknown agent" };
+      if (!["WRITER", "CONSISTENCY", "MOOD", "MONITOR", "AUDIO"].includes(kind)) return { error: "Unknown agent" };
       return { report: await c.spawn(kind as never, a.task) };
     },
   },

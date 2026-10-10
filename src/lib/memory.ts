@@ -7,7 +7,7 @@ import { publish } from "./events";
  * whole store in its system prompt and can add, edit or delete entries through tools.
  */
 
-export const MEMORY_CATEGORIES = ["decision", "preference", "character", "style", "continuity", "note"] as const;
+export const MEMORY_CATEGORIES = ["lesson", "decision", "preference", "character", "style", "continuity", "note"] as const;
 
 export function memoryKey(raw: string) {
   return raw
@@ -77,9 +77,14 @@ export async function deleteMemory(projectId: string, keyOrId: string) {
 
 /** The memory block every agent gets in its system prompt. Pinned and recent entries first, capped in size. */
 export async function memoryPrompt(projectId: string, maxChars = 5000) {
-  const entries = await listMemory(projectId);
+  const [all, project] = await Promise.all([listMemory(projectId), db.project.findUnique({ where: { id: projectId }, select: { brief: true } })]);
+  const brief = project?.brief?.trim()
+    ? `The filmmaker's brief (their standing instructions to every agent; always follow it):\n${project.brief.trim().slice(0, 3000)}\n\n`
+    : "";
+  // Lessons learned from the filmmaker's feedback come first: they are how the crew improves on this project.
+  const entries = [...all.filter((e) => e.category === "lesson"), ...all.filter((e) => e.category !== "lesson")];
   if (!entries.length) {
-    return "Shared project memory is empty. Save lasting decisions, user preferences and continuity facts with memory_write so every agent can use them.";
+    return `${brief}Shared project memory is empty. Save lasting decisions, user preferences and continuity facts with memory_write so every agent can use them.`;
   }
   const lines: string[] = [];
   let size = 0;
@@ -93,8 +98,8 @@ export async function memoryPrompt(projectId: string, maxChars = 5000) {
     lines.push(line);
     size += line.length;
   }
-  return [
-    "Shared project memory (read by every agent and the user; follow it, and keep it current):",
+  return brief + [
+    "Shared project memory (read by every agent and the user; follow it, and keep it current). Entries marked lesson are what the filmmaker taught you on this project:",
     ...lines,
     omitted ? `(${omitted} more entr${omitted === 1 ? "y" : "ies"} not shown; use memory_search.)` : "",
   ]

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/client";
 import { cn } from "@/lib/utils";
 import { estimateShots } from "@/lib/generation/catalog";
+import { BriefBox, StoryGate } from "./autopilot-view";
 import type { StyleLock } from "@/lib/prompt-builder";
 import { useStudio } from "./store";
 import { useModels } from "./use-models";
@@ -34,11 +35,11 @@ export function runtimeLabel(sec: number) {
 }
 
 /** Rough production shape for a runtime, mirroring the server's structure (sequences of ~3.5 min). */
-function shape(format: string, runtime: number, avgShot: number, acts: number) {
+function shape(format: string, runtime: number, acts: number) {
   const shots = estimateShots(format, runtime);
   const sequences = runtime <= 180 ? 1 : Math.max(2, Math.round(runtime / 210));
   const scenes = Math.max(1, Math.round(runtime / (runtime > 1200 ? 90 : 40)));
-  return { shots, sequences, scenes, acts: runtime < 60 ? 1 : acts, avgShot };
+  return { shots, sequences, scenes, acts: runtime < 60 ? 1 : acts };
 }
 
 /** Log-scale slider position ↔ seconds, so 30 s and 3 h are both easy to hit. */
@@ -106,7 +107,7 @@ function FilmStep() {
   const [title, setTitle] = React.useState(p.title);
   const [runtime, setRuntime] = React.useState(p.targetRuntimeSec);
   React.useEffect(() => setRuntime(p.targetRuntimeSec), [p.targetRuntimeSec]);
-  const sh = shape(fmt.id, runtime, fmt.avgShot, fmt.acts);
+  const sh = shape(fmt.id, runtime, fmt.acts);
   const SLIDER_MIN = 15;
   const SLIDER_MAX = 10800;
 
@@ -184,7 +185,7 @@ function FilmStep() {
       <aside className="h-fit space-y-3 rounded-2xl border border-line bg-panel p-5 lg:sticky lg:top-4">
         <div className="font-display text-sm font-semibold">You&apos;ll get</div>
         <Stat label="Runtime" value={runtimeLabel(runtime)} />
-        <Stat label="Shots" value={`≈ ${sh.shots.toLocaleString()}`} hint={`about ${sh.avgShot}s each`} />
+        <Stat label="Shots" value={`≈ ${sh.shots.toLocaleString()}`} hint="3–15 s each, chosen by the agent from the story" />
         <Stat label="Scenes" value={`≈ ${sh.scenes.toLocaleString()}`} />
         {sh.sequences > 1 && <Stat label="Sequences" value={`≈ ${sh.sequences}`} hint={`in ${sh.acts} acts, written one at a time`} />}
         <Stat label="Format" value={`${p.aspectRatio} · ${p.resolution}`} />
@@ -427,7 +428,7 @@ function WriteStep() {
   const { formats } = useModels();
   const p = state!.project;
   const fmt = formats.find((f) => f.id === p.format) ?? formats[1];
-  const sh = shape(fmt.id, p.targetRuntimeSec, fmt.avgShot, fmt.acts);
+  const sh = shape(fmt.id, p.targetRuntimeSec, fmt.acts);
   const [busy, setBusy] = React.useState(false);
   const write = async (what: "film" | "outline") => {
     setBusy(true);
@@ -440,6 +441,8 @@ function WriteStep() {
     }
   };
   const missing = !p.synopsis?.trim() && !p.logline?.trim();
+  const score = p.storyScore as { score: number; method: string } | null;
+  const blocked = !!score && score.method === "ai" && score.score < 6;
   return (
     <div className="mx-auto max-w-2xl space-y-6 text-center">
       <Clapperboard className="mx-auto size-10 text-accent" />
@@ -449,8 +452,11 @@ function WriteStep() {
         {sh.sequences > 1 ? ` across ${sh.sequences} sequences` : ""}, with {state!.characters.length || "an AI-created"} cast and {state!.elements.filter((e) => e.kind === "location").length || "AI-created"} sets.
       </p>
       {missing && <p className="text-sm text-warn">Add a story or logline first so the writer knows what happens.</p>}
+      {!missing && <StoryGate compact />}
+      {!missing && <BriefBox className="text-left" />}
+      {blocked && <p className="text-sm text-err">Your story scores under 6/10. Change it (or let the Script Doctor improve it) before writing.</p>}
       <div className="flex flex-wrap justify-center gap-3">
-        <Button size="lg" disabled={busy || missing} onClick={() => write("film")}>{busy ? <Loader2 className="animate-spin" /> : <Wand2 />} Write my film</Button>
+        <Button size="lg" variant={score && !blocked ? "secondary" : "default"} disabled={busy || missing || blocked} onClick={() => write("film")}>{busy ? <Loader2 className="animate-spin" /> : <Wand2 />} Write my film</Button>
         {sh.sequences > 1 && <Button size="lg" variant="secondary" disabled={busy || missing} onClick={() => write("outline")}>Outline first</Button>}
       </div>
       {sh.sequences > 1 && <p className="text-xs text-dim">&quot;Outline first&quot; writes the acts and sequences so you can review them, then you write each sequence from the storyboard.</p>}

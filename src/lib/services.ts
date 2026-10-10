@@ -51,7 +51,7 @@ export async function applyParsedScript(projectId: string, parsed: ParsedScript,
             speaker: sh.speaker || null,
             shotType: sh.shotType,
             cameraMove: sh.cameraMove,
-            durationSec: Math.min(15, Math.max(2, Number(sh.durationSec) || 4)),
+            durationSec: Math.min(15, Math.max(3, Number(sh.durationSec) || 5)),
             characters: { create: chars.map((c) => ({ characterId: c!.id })) },
           },
         });
@@ -177,7 +177,7 @@ export async function createShot(projectId: string, data: { sceneId?: string | n
       prompt: data.prompt ?? "",
       shotType: data.shotType,
       cameraMove: data.cameraMove,
-      durationSec: data.durationSec ?? 4,
+      durationSec: Math.min(15, Math.max(3, data.durationSec ?? 5)),
       dialogue: data.dialogue,
       speaker: data.speaker,
     },
@@ -285,10 +285,10 @@ export async function queueContactSheets(projectId: string, scope: Parameters<ty
  * so cuts inside a scene share one generation: same faces, light and set.
  */
 export async function queueMultishot(projectId: string, scope: Parameters<typeof shotsInScope>[1] & { model?: string }) {
-  const { videoModel } = await import("./generation/catalog");
+  const { videoModel, DEFAULT_VIDEO_MODEL } = await import("./generation/catalog");
   const shots = await shotsInScope(projectId, scope);
   const project = await db.project.findUniqueOrThrow({ where: { id: projectId } });
-  const slug = scope.model || (project.defaults as Record<string, string>)?.video || "bytedance-seedance-pro-2.5";
+  const slug = scope.model || (project.defaults as Record<string, string>)?.video || DEFAULT_VIDEO_MODEL;
   const m = videoModel(slug);
   if (!m?.multishot) throw new Error(`${m?.name ?? slug} can't generate several shots in one call. Pick Seedance 2.x or Kling 3.0.`);
   const maxLen = Math.max(...(m.durations ?? [15]));

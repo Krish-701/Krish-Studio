@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import useSWR from "swr";
-import { Activity, AlertTriangle, Bot, Brain, Check, Pencil, Pin, Plus, CircleSlash, Info, ListChecks, Loader2, RotateCcw, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
+import { Activity, AlertTriangle, Bot, Brain, Check, Pencil, Pin, Plus, CircleSlash, Info, ListChecks, Loader2, RotateCcw, ScrollText, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger, Progress } from "@/components/ui/misc";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import { api, fetcher } from "@/lib/client";
 import { AGENTS, AGENT_LIST } from "@/lib/agents/definitions";
 import { cn } from "@/lib/utils";
 import { useStudio, type Job } from "./store";
+import { LogPanel } from "./log-panel";
 
 export function RightPanel() {
   const { state, agents } = useStudio();
@@ -19,7 +20,7 @@ export function RightPanel() {
   const anyThinking = Object.values(agents).some((a) => a.status !== "idle" && Date.now() - a.at < 120_000);
   return (
     <Tabs defaultValue="director" className="flex min-h-0 w-full flex-1 flex-col">
-      <TabsList>
+      <TabsList className="overflow-x-auto [scrollbar-width:none]">
         <TabsTrigger value="director">
           <Bot className="size-3.5" /> Director {anyThinking && <span className="size-1.5 animate-pulse rounded-full bg-accent" />}
         </TabsTrigger>
@@ -33,6 +34,9 @@ export function RightPanel() {
           <Activity className="size-3.5" /> Queue {active > 0 && <Badge tone="accent" className="px-1 py-0">{active}</Badge>}
           {failed > 0 && <Badge tone="err" className="px-1 py-0">{failed}</Badge>}
         </TabsTrigger>
+        <TabsTrigger value="log">
+          <ScrollText className="size-3.5" /> Log
+        </TabsTrigger>
       </TabsList>
       <TabsContent value="director" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
         <Chat />
@@ -45,6 +49,9 @@ export function RightPanel() {
       </TabsContent>
       <TabsContent value="queue" className="min-h-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
         <QueuePanel />
+      </TabsContent>
+      <TabsContent value="log" className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+        <LogPanel />
       </TabsContent>
     </Tabs>
   );
@@ -196,6 +203,17 @@ function MessageRow({ m, streaming }: { m: Msg; streaming?: boolean }) {
     );
   }
   const def = AGENTS[m.agent as keyof typeof AGENTS];
+  if (m.role === "summary") {
+    return (
+      <div className="rounded-xl border border-accent/30 bg-accent/[0.06] px-3 py-2">
+        <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-medium text-accent">
+          <Sparkles className="size-3" /> Progress update
+          {m.createdAt && <span className="ml-auto font-normal text-dim">{new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+        </div>
+        <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-fg/90">{m.content}</div>
+      </div>
+    );
+  }
   if (m.role === "tool") {
     return (
       <div className="flex items-center gap-2 pl-1 text-[11px] text-dim">
@@ -374,7 +392,7 @@ interface MemoryRow {
   updatedAt: string;
 }
 
-const MEMORY_CATS = ["decision", "preference", "character", "style", "continuity", "note"];
+const MEMORY_CATS = ["lesson", "decision", "preference", "character", "style", "continuity", "note"];
 
 /** Shared project memory: the user and every agent read and edit the same entries. */
 function MemoryPanel() {

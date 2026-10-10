@@ -1,15 +1,39 @@
-# Local Postgres + Redis for development: `docker compose up -d`
+# Everything in one go:          docker compose up -d --build      → http://localhost:3000
+# Only the databases (for dev):  docker compose up -d postgres redis   then  npm run dev
+# Put your keys in .env first (copy .env.example). The same file works on a cloud server.
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: film
       POSTGRES_PASSWORD: film
       POSTGRES_DB: filmstudio
     ports: ["5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U film -d filmstudio"]
+      interval: 5s
+      retries: 20
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports: ["6379:6379"]
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://film:film@postgres:5432/filmstudio
+      REDIS_URL: redis://redis:6379
+      INLINE_WORKER: "1"
+      STORAGE_DIR: /app/storage
+    ports: ["${PORT:-3000}:3000"]
+    # Each project is its own folder in here: storage/<projectId>/ (media, project.json, story.md, memory.md, activity.log)
+    volumes: [studio:/app/storage]
 volumes:
   pgdata:
+  studio:

@@ -176,7 +176,7 @@ export function heuristicParse(raw: string): ParsedScript {
           speaker: name,
           shotType: "MEDIUM_CLOSE",
           cameraMove: "static",
-          durationSec: Math.min(12, Math.max(2, Math.round(dialogue.split(" ").length / 2.5))),
+          durationSec: Math.min(15, Math.max(3, Math.round(dialogue.split(" ").length / 2.5))),
           characters: [name],
         });
         continue;

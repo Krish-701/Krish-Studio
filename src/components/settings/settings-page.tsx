@@ -16,6 +16,7 @@ import type { Capability, LlmCaps, McpServerConfig } from "@/lib/settings";
 const CAPS: Capability[] = ["image", "video", "tts", "music", "sfx", "upscale", "inpaint"];
 
 const PRESETS: { name: string; url: string; model: string; reasoning?: boolean }[] = [
+  { name: "OpenRouter · Qwen3.8 Omni Flash (default)", url: "https://openrouter.ai/api/v1", model: "qwen/qwen3.8-omni-flash", reasoning: true },
   { name: "OpenAI", url: "https://api.openai.com/v1", model: "gpt-4o" },
   { name: "Anthropic", url: "https://api.anthropic.com/v1", model: "claude-sonnet-5-5" },
   { name: "OpenRouter · Qwen 3.8 Flash", url: "https://openrouter.ai/api/v1", model: "qwen/qwen3.8-flash", reasoning: true },
