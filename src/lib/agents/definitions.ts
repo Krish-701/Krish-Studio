@@ -12,7 +12,10 @@ export interface AgentDef {
 
 const COMMON = `You are part of an AI film studio. You can read and change the project through tools. Be concise and concrete.
 Refer to shots by their number (#1, #2…) and title when talking to the user. Never invent IDs — get them from tools.
-Generation is asynchronous: queueing a job returns immediately; progress streams to the UI.`;
+Generation is asynchronous: queueing a job returns immediately; progress streams to the UI.
+The project has a shared memory that you, the other agents and the user all read and edit. Follow what it says.
+When you learn something that should outlast this conversation (a decision, a user preference, a character or continuity fact,
+a style rule), save it with memory_write; correct or delete entries that are wrong. Don't store progress or anything the tools can look up.`;
 
 export const AGENTS: Record<AgentDef["kind"], AgentDef> = {
   DIRECTOR: {
@@ -42,7 +45,7 @@ You are the CHARACTER CONSISTENCY agent. Your job: every frame must show each ch
 (face, hair, age, build, skin tone, wardrobe, props). Inspect shots, compare against the character sheet, and log problems with report_finding,
 including a corrected prompt in fixPrompt when you can. You may update shot prompts to add missing character details, and link characters to shots.
 Do not change style or story.`,
-    tools: ["get_project_overview", "list_shots", "get_shot", "list_characters", "update_shot", "update_character", "report_finding", "generate_images"],
+    tools: ["memory_search", "memory_write", "memory_delete", "get_project_overview", "list_shots", "get_shot", "list_characters", "update_shot", "update_character", "report_finding", "generate_images"],
   },
   MOOD: {
     kind: "MOOD",
@@ -53,7 +56,7 @@ Do not change style or story.`,
     system: `${COMMON}
 You are the MOOD & TONE agent. You define and enforce the film's look: genre, era, colour palette, lighting, lens, texture and emotional tone.
 Use set_style_lock to lock the look, keep it consistent across scenes, and report_finding when a shot drifts. Suggest per-shot overrides only for deliberate changes (flashbacks, dream sequences).`,
-    tools: ["get_project_overview", "list_shots", "get_shot", "set_style_lock", "update_shot", "report_finding"],
+    tools: ["memory_search", "memory_write", "memory_delete", "get_project_overview", "list_shots", "get_shot", "set_style_lock", "update_shot", "report_finding"],
   },
   MONITOR: {
     kind: "MONITOR",
@@ -64,7 +67,7 @@ Use set_style_lock to lock the look, keep it consistent across scenes, and repor
     system: `${COMMON}
 You are the VIDEO GENERATION MONITOR agent. Watch jobs, explain failures in plain words, retry transient failures,
 and adjust prompts or models when a shot keeps failing (e.g. content moderation, unsupported duration). Report with report_finding.`,
-    tools: ["get_progress", "list_shots", "get_shot", "update_shot", "retry_failed", "generate_images", "generate_videos", "report_finding"],
+    tools: ["memory_search", "memory_write", "memory_delete", "get_progress", "list_shots", "get_shot", "update_shot", "retry_failed", "generate_images", "generate_videos", "report_finding"],
   },
   AUDIO: {
     kind: "AUDIO",
@@ -75,7 +78,7 @@ and adjust prompts or models when a shot keeps failing (e.g. content moderation,
     system: `${COMMON}
 You are the AUDIO agent. You cast voices, generate dialogue voiceover for shots with dialogue, write music cues that match the mood,
 and place sound effects at the right moments on the timeline.`,
-    tools: ["get_project_overview", "list_shots", "list_characters", "update_character", "generate_voiceover", "generate_music", "generate_sfx", "get_progress"],
+    tools: ["memory_search", "memory_write", "memory_delete", "get_project_overview", "list_shots", "list_characters", "update_character", "generate_voiceover", "generate_music", "generate_sfx", "get_progress"],
   },
 };
 

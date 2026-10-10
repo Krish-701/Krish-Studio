@@ -106,6 +106,7 @@ model Project {
   clips      TimelineClip[]
   messages   AgentMessage[]
   findings   AgentFinding[]
+  memory     MemoryEntry[]
 }
 
 model Scene {
@@ -264,6 +265,8 @@ model AgentMessage {
   content   String
   toolCalls Json?
   toolCallId String?
+  /// Provider reasoning_details for this assistant turn, passed back to the model unmodified.
+  reasoning Json?
   createdAt DateTime  @default(now())
 
   @@index([projectId, createdAt])
@@ -295,8 +298,35 @@ model AppSettings {
   agentModels Json     @default("{}")
   /// Whether sub-agents run automatically after generations finish.
   autoAgents  Boolean  @default(true)
+  /// Send reasoning: { enabled: true } (OpenRouter) and pass reasoning_details back unmodified.
+  llmReasoning Boolean @default(false)
+  /// Optional model used for image checks when the main model can't see images.
+  visionModel String   @default("")
+  /// Result of the last model validation: { model, baseUrl, tools, vision, json, reasoning, checkedAt, checks: [...] }
+  llmCaps     Json?
   /// Generation backends, tried in priority order.
   /// [{ id, name, kind: "magnific"|"mcp"|"mock", url, token, enabled, capabilities: [...], toolMap }]
   mcpServers  Json     @default("[]")
   updatedAt   DateTime @updatedAt
+}
+
+/// Shared project memory. Every agent reads it in its system prompt and can add, edit or delete entries.
+model MemoryEntry {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// Short unique name, e.g. "maya-wardrobe" or "user-prefers-warm-palette".
+  key       String
+  /// decision | preference | character | style | continuity | note
+  category  String   @default("note")
+  content   String
+  pinned    Boolean  @default(false)
+  /// Who last wrote it: USER or an agent kind.
+  updatedBy String   @default("USER")
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, key])
+  @@index([projectId, updatedAt])
 }

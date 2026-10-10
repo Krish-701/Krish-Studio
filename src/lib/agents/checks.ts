@@ -3,7 +3,8 @@ import path from "path";
 import { db } from "../db";
 import { publish } from "../events";
 import { ffmpeg, tmpDir } from "../ffmpeg";
-import { chatJson, llmConfig, type ChatContentPart } from "../llm";
+import { chatJson, visionModelFor, type ChatContentPart } from "../llm";
+import { memoryPrompt } from "../memory";
 import { effectiveStyle, shotCharacters, styleText } from "../prompt-builder";
 import { localPath } from "../storage";
 import type { AgentKind } from "@prisma/client";
@@ -69,9 +70,10 @@ export async function consistencyCheck(shotId: string) {
     await addFinding(shot.projectId, null, "MONITOR", "info", "Frames are coming from the offline preview renderer, not Magnific.", "Add your Magnific MCP access token in Settings, then regenerate.");
   }
 
-  const cfg = await llmConfig("CONSISTENCY");
+  // Needs a model that can see images; text-only models fall back to the rule-based checks above.
+  const visionModel = await visionModelFor("CONSISTENCY");
   const withRefs = chars.filter((c) => c.references.length);
-  if (cfg && withRefs.length && frame && !(frame.meta as Record<string, unknown>)?.preview) {
+  if (visionModel && withRefs.length && frame && !(frame.meta as Record<string, unknown>)?.preview) {
     try {
       const content: ChatContentPart[] = [
         { type: "text", text: `Shot #${shot.order + 1} prompt:\n${shot.prompt || shot.description}\n\nCompare the GENERATED FRAME (first image) with each character's reference images. Return JSON {"score":0-100,"issues":[{"severity":"info|warn|error","message":"...","suggestion":"...","fixPrompt":"full corrected image prompt"}]}. Only report real, visible mismatches (face, hair, age, build, skin tone, wardrobe, props). Empty issues if consistent.` },
@@ -87,8 +89,8 @@ export async function consistencyCheck(shotId: string) {
         }
       }
       const v = await chatJson<VisionVerdict>(
-        [{ role: "system", content: "You are the Character Consistency agent of a film studio. You compare frames to character reference sheets." }, { role: "user", content }],
-        { agent: "CONSISTENCY" },
+        [{ role: "system", content: `You are the Character Consistency agent of a film studio. You compare frames to character reference sheets.\n\n${await memoryPrompt(shot.projectId, 2000)}` }, { role: "user", content }],
+        { agent: "CONSISTENCY", model: visionModel, reasoning: false },
       );
       await db.asset.update({ where: { id: frame.id }, data: { meta: { ...(frame.meta as object), consistencyScore: v.score } } });
       for (const i of v.issues ?? []) await addFinding(shot.projectId, shotId, "CONSISTENCY", i.severity || "warn", i.message, i.suggestion, i.fixPrompt);
@@ -110,16 +112,16 @@ export async function moodCheck(shotId: string) {
     if (!open) await addFinding(shot.projectId, null, "MOOD", "warn", "No style lock is set, so look and colour may vary from shot to shot.", "Open Style and lock a look, or ask the Director to define one from your references.");
     return;
   }
-  const cfg = await llmConfig("MOOD");
+  const visionModel = await visionModelFor("MOOD");
   const frame = await db.asset.findUnique({ where: { id: shot.imageAssetId } });
-  if (!cfg || !frame || (frame.meta as Record<string, unknown>)?.preview) return;
+  if (!visionModel || !frame || (frame.meta as Record<string, unknown>)?.preview) return;
   publish(shot.projectId, { type: "agent", agent: "MOOD", status: "thinking", detail: `Checking shot #${shot.order + 1}` });
   try {
     const img = await thumbDataUrl(frame.storageKey);
     if (!img) return;
     const v = await chatJson<VisionVerdict>(
       [
-        { role: "system", content: "You are the Mood & Tone agent of a film studio. You judge whether a frame matches the locked visual style." },
+        { role: "system", content: `You are the Mood & Tone agent of a film studio. You judge whether a frame matches the locked visual style.\n\n${await memoryPrompt(shot.projectId, 2000)}` },
         {
           role: "user",
           content: [
@@ -128,7 +130,7 @@ export async function moodCheck(shotId: string) {
           ],
         },
       ],
-      { agent: "MOOD" },
+      { agent: "MOOD", model: visionModel, reasoning: false },
     );
     for (const i of v.issues ?? []) await addFinding(shot.projectId, shotId, "MOOD", i.severity || "warn", i.message, i.suggestion, i.fixPrompt);
   } catch (e) {

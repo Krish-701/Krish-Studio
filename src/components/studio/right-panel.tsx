@@ -1,10 +1,11 @@
 "use client";
 import * as React from "react";
 import useSWR from "swr";
-import { Activity, AlertTriangle, Bot, Check, CircleSlash, Info, ListChecks, Loader2, RotateCcw, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
+import { Activity, AlertTriangle, Bot, Brain, Check, Pencil, Pin, Plus, CircleSlash, Info, ListChecks, Loader2, RotateCcw, Send, Sparkles, Trash2, Wand2, X, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger, Progress } from "@/components/ui/misc";
 import { Badge } from "@/components/ui/badge";
+import { Input, NativeSelect, Textarea } from "@/components/ui/input";
 import { api, fetcher } from "@/lib/client";
 import { AGENTS, AGENT_LIST } from "@/lib/agents/definitions";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,9 @@ export function RightPanel() {
         <TabsTrigger value="agents">
           <Sparkles className="size-3.5" /> Agents {findings > 0 && <Badge tone="warn" className="px-1 py-0">{findings}</Badge>}
         </TabsTrigger>
+        <TabsTrigger value="memory">
+          <Brain className="size-3.5" /> Memory
+        </TabsTrigger>
         <TabsTrigger value="queue">
           <Activity className="size-3.5" /> Queue {active > 0 && <Badge tone="accent" className="px-1 py-0">{active}</Badge>}
           {failed > 0 && <Badge tone="err" className="px-1 py-0">{failed}</Badge>}
@@ -35,6 +39,9 @@ export function RightPanel() {
       </TabsContent>
       <TabsContent value="agents" className="min-h-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
         <AgentsPanel />
+      </TabsContent>
+      <TabsContent value="memory" className="min-h-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
+        <MemoryPanel />
       </TabsContent>
       <TabsContent value="queue" className="min-h-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
         <QueuePanel />
@@ -78,6 +85,9 @@ const TOOL_LABEL: Record<string, string> = {
   retry_failed: "retried failures",
   export_film: "started export",
   export_storyboard_pdf: "started PDF export",
+  memory_write: "saved to memory",
+  memory_delete: "removed a memory",
+  memory_search: "read memory",
 };
 
 function Chat() {
@@ -349,6 +359,104 @@ function QueuePanel() {
         ) : null,
       )}
       {!state.jobs.length && <div className="rounded-xl border border-dashed border-line-2 p-4 text-center text-xs text-dim">Nothing rendered yet.</div>}
+    </div>
+  );
+}
+
+interface MemoryRow {
+  id: string;
+  key: string;
+  category: string;
+  content: string;
+  pinned: boolean;
+  updatedBy: string;
+  version: number;
+  updatedAt: string;
+}
+
+const MEMORY_CATS = ["decision", "preference", "character", "style", "continuity", "note"];
+
+/** Shared project memory: the user and every agent read and edit the same entries. */
+function MemoryPanel() {
+  const { projectId, memoryVersion } = useStudio();
+  const [q, setQ] = React.useState("");
+  const key = `/api/projects/${projectId}/memory${q ? `?q=${encodeURIComponent(q)}` : ""}`;
+  const { data, mutate } = useSWR<MemoryRow[]>(key, fetcher);
+  React.useEffect(() => {
+    mutate();
+  }, [memoryVersion, mutate]);
+  const [editing, setEditing] = React.useState<Partial<MemoryRow> | null>(null);
+
+  const save = async () => {
+    if (!editing?.key?.trim() || !editing.content?.trim()) return;
+    if (editing.id) await api(`/api/projects/${projectId}/memory/${editing.id}`, { method: "PATCH", body: editing });
+    else await api(`/api/projects/${projectId}/memory`, { body: editing });
+    setEditing(null);
+    mutate();
+  };
+  const patch = async (m: MemoryRow, body: Partial<MemoryRow>) => {
+    await api(`/api/projects/${projectId}/memory/${m.id}`, { method: "PATCH", body });
+    mutate();
+  };
+  const remove = async (m: MemoryRow) => {
+    if (!confirm(`Delete “${m.key}” from project memory?`)) return;
+    await api(`/api/projects/${projectId}/memory/${m.id}`, { method: "DELETE" });
+    mutate();
+  };
+
+  return (
+    <div className="space-y-3 p-3">
+      <p className="text-xs text-muted">Facts every agent reads before it works, and can add to or correct. Edit them here too.</p>
+      <div className="flex gap-2">
+        <Input className="h-8" placeholder="Search memory" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Button size="sm" variant="secondary" onClick={() => setEditing({ key: "", content: "", category: "note" })}>
+          <Plus /> Add
+        </Button>
+      </div>
+      {editing && (
+        <div className="space-y-2 rounded-xl border border-accent/40 bg-panel-2 p-3">
+          <div className="flex gap-2">
+            <Input className="h-8" placeholder="key, e.g. maya-wardrobe" value={editing.key ?? ""} onChange={(e) => setEditing({ ...editing, key: e.target.value })} />
+            <NativeSelect className="h-8 w-32" value={editing.category ?? "note"} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+              {MEMORY_CATS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </NativeSelect>
+          </div>
+          <Textarea rows={3} placeholder="What everyone should remember" value={editing.content ?? ""} onChange={(e) => setEditing({ ...editing, content: e.target.value })} />
+          <div className="flex justify-end gap-2">
+            <Button size="xs" variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button size="xs" onClick={save}>Save</Button>
+          </div>
+        </div>
+      )}
+      {!data?.length && !editing && (
+        <div className="rounded-xl border border-dashed border-line-2 p-4 text-center text-xs text-muted">
+          Nothing saved yet. Agents add decisions and continuity notes as they work, or tell the Director “remember …”.
+        </div>
+      )}
+      {data?.map((m) => {
+        const by = m.updatedBy === "USER" ? null : AGENTS[m.updatedBy as keyof typeof AGENTS];
+        return (
+          <div key={m.id} className="group rounded-xl border border-line bg-panel-2 p-3">
+            <div className="mb-1 flex items-center gap-2">
+              {m.pinned && <Pin className="size-3 text-accent" />}
+              <span className="truncate text-xs font-medium">{m.key}</span>
+              <Badge tone="neutral" className="px-1 py-0">{m.category}</Badge>
+              <span className="ml-auto flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100">
+                <button title={m.pinned ? "Unpin" : "Pin"} onClick={() => patch(m, { pinned: !m.pinned })} className="rounded p-1 text-dim hover:text-accent"><Pin className="size-3" /></button>
+                <button title="Edit" onClick={() => setEditing(m)} className="rounded p-1 text-dim hover:text-fg"><Pencil className="size-3" /></button>
+                <button title="Delete" onClick={() => remove(m)} className="rounded p-1 text-dim hover:text-err"><Trash2 className="size-3" /></button>
+              </span>
+            </div>
+            <p className="whitespace-pre-wrap text-sm text-fg/90">{m.content}</p>
+            <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-dim">
+              {by ? <span className="size-1.5 rounded-full" style={{ background: by.color }} /> : null}
+              {by ? by.name : "You"} · v{m.version} · {new Date(m.updatedAt).toLocaleString()}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

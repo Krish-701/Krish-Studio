@@ -32,6 +32,7 @@ interface Ctx {
   agents: Record<string, AgentLive>;
   streaming: { agent: string; text: string } | null;
   chatVersion: number;
+  memoryVersion: number;
   connected: boolean;
 }
 
@@ -50,6 +51,7 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
   const [agents, setAgents] = React.useState<Record<string, AgentLive>>({});
   const [streaming, setStreaming] = React.useState<{ agent: string; text: string } | null>(null);
   const [chatVersion, setChatVersion] = React.useState(0);
+  const [memoryVersion, setMemoryVersion] = React.useState(0);
   const [connected, setConnected] = React.useState(false);
 
   // Pick the starting view from the project stage once.
@@ -124,7 +126,8 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
           }
           break;
         case "refresh":
-          scheduleRefresh();
+          if (e.scope === "memory") setMemoryVersion((v) => v + 1);
+          else scheduleRefresh();
           break;
       }
     };
@@ -143,6 +146,7 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
     agents,
     streaming,
     chatVersion,
+    memoryVersion,
     connected,
   };
   return <StudioCtx.Provider value={value}>{children}</StudioCtx.Provider>;

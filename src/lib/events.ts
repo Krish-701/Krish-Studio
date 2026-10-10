@@ -13,7 +13,7 @@ export type StudioEvent =
   | { type: "finding"; finding: Record<string, unknown> }
   | { type: "agent"; agent: string; status: "thinking" | "idle" | "acting"; detail?: string }
   | { type: "chat"; messageId: string; agent: string; delta?: string; done?: boolean }
-  | { type: "refresh"; scope: "shots" | "assets" | "timeline" | "characters" | "project" | "all" };
+  | { type: "refresh"; scope: "shots" | "assets" | "timeline" | "characters" | "project" | "memory" | "all" };
 
 const CHANNEL = "filmstudio:events:";
 

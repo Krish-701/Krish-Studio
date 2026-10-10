@@ -25,12 +25,27 @@ export interface McpServerConfig {
   toolMap?: Partial<Record<Capability, { tool: string; args: string; poll?: { tool: string; args: string } }>>;
 }
 
+export interface LlmCaps {
+  model: string;
+  baseUrl: string;
+  tools: boolean;
+  vision: boolean;
+  visionModelOk?: boolean;
+  json: boolean;
+  reasoning: boolean;
+  checkedAt: string;
+  checks: { id: string; label: string; ok: boolean; detail: string; ms?: number }[];
+}
+
 export interface Settings {
   llmBaseUrl: string;
   llmApiKey: string | null;
   llmModel: string;
   agentModels: Record<string, string>;
   autoAgents: boolean;
+  llmReasoning: boolean;
+  visionModel: string;
+  llmCaps: LlmCaps | null;
   mcpServers: McpServerConfig[];
 }
 
@@ -65,6 +80,8 @@ export async function getSettings(): Promise<Settings> {
         llmBaseUrl: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
         llmApiKey: encryptSecret(process.env.LLM_API_KEY || null),
         llmModel: process.env.LLM_MODEL || "gpt-4o",
+        llmReasoning: process.env.LLM_REASONING === "1" || /openrouter\.ai/.test(process.env.LLM_BASE_URL || ""),
+        visionModel: process.env.LLM_VISION_MODEL || "",
         mcpServers: defaultServers().map((s) => ({ ...s, token: encryptSecret(s.token) })) as never,
       },
     });
@@ -79,6 +96,9 @@ export async function getSettings(): Promise<Settings> {
     llmModel: row.llmModel,
     agentModels: (row.agentModels as Record<string, string>) || {},
     autoAgents: row.autoAgents,
+    llmReasoning: row.llmReasoning,
+    visionModel: row.visionModel,
+    llmCaps: (row.llmCaps as unknown as LlmCaps) ?? null,
     mcpServers: servers.length ? servers : defaultServers(),
   };
 }
@@ -106,6 +126,8 @@ export async function saveSettings(input: Partial<Settings>) {
   }
   if (input.agentModels !== undefined) data.agentModels = input.agentModels;
   if (input.autoAgents !== undefined) data.autoAgents = input.autoAgents;
+  if (input.llmReasoning !== undefined) data.llmReasoning = input.llmReasoning;
+  if (input.visionModel !== undefined) data.visionModel = input.visionModel.trim();
   if (input.mcpServers !== undefined) {
     data.mcpServers = input.mcpServers.map((s) => {
       // Keep the stored token when the browser sends back the masked value.

@@ -5,6 +5,7 @@ import type { ToolDef } from "../llm";
 import { enqueue } from "../queue";
 import * as svc from "../services";
 import type { StyleLock } from "../prompt-builder";
+import { deleteMemory, listMemory, writeMemory } from "../memory";
 
 export interface ToolCtx {
   projectId: string;
@@ -256,6 +257,35 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
       const j = await enqueue({ projectId: c.projectId, type: "EXPORT_PDF", maxAttempts: 1 });
       return { jobId: j.id };
     },
+  },
+  memory_search: {
+    schema: S("Search the shared project memory (all agents and the user share it). Omit query to list everything.", {
+      query: str("Words to look for in keys and content"), category: str("decision|preference|character|style|continuity|note"),
+    }),
+    impl: async (a, c) => {
+      const rows = await listMemory(c.projectId, { query: a.query, category: a.category });
+      return rows.map((e) => ({ key: e.key, category: e.category, content: e.content, pinned: e.pinned, version: e.version, updatedBy: e.updatedBy, updatedAt: e.updatedAt }));
+    },
+  },
+  memory_write: {
+    schema: S(
+      "Add or update a shared memory entry so every agent (and future conversations) remember it. Use for lasting decisions, user preferences, character/continuity facts and style rules, not for progress updates.",
+      {
+        key: str("Short unique name, e.g. 'maya-wardrobe'. Reusing a key updates that entry."), content: str("The fact, in one to three sentences"),
+        category: str("decision|preference|character|style|continuity|note"), mode: str("replace (default) or append"),
+        pinned: { type: "boolean", description: "Pin so it always stays at the top" },
+        expectedVersion: num("Optional: the version you read; the write fails if someone changed it since"),
+      },
+      ["key", "content"],
+    ),
+    impl: async (a, c) => {
+      const e = await writeMemory(c.projectId, a as never, c.agent);
+      return { ok: true, key: e.key, version: e.version };
+    },
+  },
+  memory_delete: {
+    schema: S("Delete a shared memory entry that is wrong or no longer true.", { key: str("Entry key") }, ["key"]),
+    impl: async (a, c) => ({ deleted: await deleteMemory(c.projectId, a.key) }),
   },
   spawn_subagent: {
     schema: S("Delegate a task to a specialist sub-agent and get its report back.", {

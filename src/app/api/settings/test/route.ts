@@ -1,13 +1,18 @@
 import { ok, route } from "@/lib/api";
-import { testLlm } from "@/lib/llm";
+import { testLlm, validateLlm } from "@/lib/llm";
 import { listTools } from "@/lib/mcp/client";
 import { getSettings } from "@/lib/settings";
 import { errorMessage } from "@/lib/utils";
 
-/** POST { target: "llm" } or { target: "mcp", serverId } — checks a connection. */
+/** POST { target: "llm" | "validate" } or { target: "mcp", serverId } — checks a connection or validates the model's capabilities. */
 export const POST = route(async (req: Request) => {
   const b = await req.json();
   try {
+    if (b.target === "validate") {
+      const { caps, checks } = await validateLlm();
+      const passed = checks.filter((c) => c.ok).length;
+      return ok({ ok: checks.find((c) => c.id === "connect")?.ok ?? false, detail: `${passed}/${checks.length} checks passed`, caps, checks });
+    }
     if (b.target === "llm") {
       const reply = await testLlm();
       return ok({ ok: true, detail: `Model replied: “${reply.slice(0, 60)}”` });

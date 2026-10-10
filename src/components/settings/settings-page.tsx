@@ -2,7 +2,7 @@
 import * as React from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { ArrowDown, ArrowLeft, ArrowUp, Bot, CheckCircle2, Cpu, Plug, Plus, Save, Server, Trash2, XCircle, Zap } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, Bot, CheckCircle2, Cpu, Plug, Plus, Save, Server, ShieldCheck, Trash2, XCircle, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
@@ -11,14 +11,14 @@ import { Section, Switch } from "@/components/ui/misc";
 import { Badge } from "@/components/ui/badge";
 import { api, fetcher } from "@/lib/client";
 import { AGENT_LIST } from "@/lib/agents/definitions";
-import type { Capability, McpServerConfig } from "@/lib/settings";
+import type { Capability, LlmCaps, McpServerConfig } from "@/lib/settings";
 
 const CAPS: Capability[] = ["image", "video", "tts", "music", "sfx", "upscale", "inpaint"];
 
-const PRESETS = [
+const PRESETS: { name: string; url: string; model: string; reasoning?: boolean }[] = [
   { name: "OpenAI", url: "https://api.openai.com/v1", model: "gpt-4o" },
   { name: "Anthropic", url: "https://api.anthropic.com/v1", model: "claude-sonnet-5-5" },
-  { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-4.5" },
+  { name: "OpenRouter · Qwen 3.8 Flash", url: "https://openrouter.ai/api/v1", model: "qwen/qwen3.8-flash", reasoning: true },
   { name: "Gemini", url: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.5-pro" },
   { name: "xAI Grok", url: "https://api.x.ai/v1", model: "grok-4" },
   { name: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
@@ -35,6 +35,9 @@ interface SettingsData {
   llmModel: string;
   agentModels: Record<string, string>;
   autoAgents: boolean;
+  llmReasoning: boolean;
+  visionModel: string;
+  llmCaps: LlmCaps | null;
   mcpServers: Server[];
 }
 
@@ -51,6 +54,7 @@ export function SettingsPage() {
   const { data, mutate } = useSWR<SettingsData>("/api/settings", fetcher);
   const [form, setForm] = React.useState<SettingsData | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const [validating, setValidating] = React.useState(false);
   const [tests, setTests] = React.useState<Record<string, { ok: boolean; detail: string } | "running">>({});
 
   React.useEffect(() => {
@@ -89,6 +93,19 @@ export function SettingsPage() {
     setTests((t) => ({ ...t, [key]: r }));
   };
 
+  const validate = async () => {
+    if (!(await save())) return;
+    setValidating(true);
+    try {
+      const r = await api<{ ok: boolean; detail: string; caps: LlmCaps }>("/api/settings/test", { body: { target: "validate" } });
+      setForm((f) => (f ? { ...f, llmCaps: r.caps } : f));
+      mutate();
+      (r.ok ? toast.success : toast.error)(`Model validation: ${r.detail}`);
+    } finally {
+      setValidating(false);
+    }
+  };
+
   const TestResult = ({ k }: { k: string }) => {
     const t = tests[k];
     if (!t) return null;
@@ -125,7 +142,7 @@ export function SettingsPage() {
         <Section title={<span className="flex items-center gap-2"><Bot className="size-4 text-accent" /> AI assistant · OpenAI-compatible API</span>} actions={<TestResult k="llm" />}>
           <div className="mb-4 flex flex-wrap gap-2">
             {PRESETS.map((p) => (
-              <button key={p.name} onClick={() => setForm({ ...form, llmBaseUrl: p.url, llmModel: p.model })} className={`rounded-lg border px-2.5 py-1 text-xs transition ${form.llmBaseUrl === p.url ? "border-accent bg-accent/10 text-accent" : "border-line-2 text-muted hover:text-fg"}`}>
+              <button key={p.name} onClick={() => setForm({ ...form, llmBaseUrl: p.url, llmModel: p.model, llmReasoning: !!p.reasoning })} className={`rounded-lg border px-2.5 py-1 text-xs transition ${form.llmBaseUrl === p.url ? "border-accent bg-accent/10 text-accent" : "border-line-2 text-muted hover:text-fg"}`}>
                 {p.name}
               </button>
             ))}
@@ -144,7 +161,20 @@ export function SettingsPage() {
               <Input value={form.llmModel} onChange={(e) => set("llmModel", e.target.value)} placeholder="gpt-4o, claude-sonnet-5-5, gemini-2.5-pro…" />
             </div>
           </div>
-          <p className="mt-3 text-xs text-dim">Use a vision-capable model so the Consistency and Mood agents can look at frames and reference images.</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-panel-2 px-4 py-3">
+              <div>
+                <div className="text-sm font-medium">Reasoning</div>
+                <div className="text-xs text-muted">Sends reasoning: enabled and passes reasoning_details back unmodified on every turn (OpenRouter).</div>
+              </div>
+              <Switch checked={form.llmReasoning} onCheckedChange={(v) => set("llmReasoning", v)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Vision model for frame checks (optional)</Label>
+              <Input value={form.visionModel} onChange={(e) => set("visionModel", e.target.value)} placeholder={`Blank = ${form.llmModel || "main model"}`} />
+              <p className="text-xs text-dim">Only needed if the main model can't see images. Validate shows whether it can.</p>
+            </div>
+          </div>
           <div className="mt-4 flex items-center justify-between rounded-xl border border-line bg-panel-2 px-4 py-3">
             <div>
               <div className="text-sm font-medium">Sub-agents run automatically</div>
@@ -156,7 +186,11 @@ export function SettingsPage() {
             <Button variant="secondary" size="sm" onClick={() => test("llm", { target: "llm" })}>
               <Zap /> Test connection
             </Button>
+            <Button size="sm" onClick={validate} disabled={validating}>
+              <ShieldCheck /> {validating ? "Validating model…" : "Validate model"}
+            </Button>
           </div>
+          {form.llmCaps && <CapsReport caps={form.llmCaps} current={form.llmModel} />}
 
           <div className="mt-6">
             <Label>Per-agent model overrides (optional)</Label>
@@ -289,5 +323,41 @@ function ToolMapEditor({ value, onChange }: { value: McpServerConfig["toolMap"];
       />
       {err && <div className="text-xs text-err">{err}</div>}
     </>
+  );
+}
+
+function CapsReport({ caps, current }: { caps: LlmCaps; current: string }) {
+  const stale = caps.model !== current;
+  const pill = (label: string, on: boolean, fallback: string) => (
+    <span className={`rounded-md border px-2 py-0.5 text-xs ${on ? "border-ok/40 text-ok" : "border-warn/40 text-warn"}`} title={on ? "" : fallback}>
+      {label}: {on ? "yes" : `no · ${fallback}`}
+    </span>
+  );
+  return (
+    <div className="mt-4 rounded-xl border border-line bg-panel-2 p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-medium">
+          Validated {caps.model} <span className="text-xs text-dim">{new Date(caps.checkedAt).toLocaleString()}</span>
+        </div>
+        {stale && <Badge tone="warn">Model changed, validate again</Badge>}
+      </div>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {pill("Tool calling", caps.tools, "agents use prompted tools")}
+        {pill("Reasoning", caps.reasoning, "runs without reasoning")}
+        {pill("JSON", caps.json, "parsed from text")}
+        {pill("Frame checks can see images", caps.visionModelOk ?? caps.vision, "rule-based checks only")}
+      </div>
+      <ul className="space-y-1">
+        {caps.checks.map((c) => (
+          <li key={c.id} className="flex items-start gap-2 text-xs">
+            {c.ok ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-ok" /> : <XCircle className="mt-0.5 size-3.5 shrink-0 text-err" />}
+            <span>
+              <span className="font-medium text-fg">{c.label}</span> <span className="text-muted">{c.detail}</span>
+              {c.ms !== undefined && <span className="text-dim"> · {(c.ms / 1000).toFixed(1)}s</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

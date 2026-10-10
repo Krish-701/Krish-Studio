@@ -24,6 +24,18 @@ Then open **Settings** and add:
 | Magnific MCP access token | Settings → Generation backends → Magnific | Real images, video, voice, music, SFX, upscale, inpaint |
 | OpenAI-compatible base URL + API key + model | Settings → AI assistant | Director chat, AI script breakdown, sub-agents. Use a vision model so consistency/mood checks can look at frames |
 
+**OpenRouter + Qwen (or any reasoning model):** pick the *OpenRouter · Qwen 3.8 Flash* preset, paste your OpenRouter key, keep
+**Reasoning** on and press **Validate model**. Reasoning sends `reasoning: { enabled: true }` and every assistant turn's
+`reasoning_details` is stored verbatim and passed back unmodified, across tool calls and across conversation turns.
+Validate runs the model through everything the studio needs and saves the result:
+
+| Check | If it fails |
+|---|---|
+| Tool calling (call, result, answer) | Agents switch to prompted tools (tool calls written as JSON blocks) automatically |
+| Reasoning and passing `reasoning_details` back | Agents run without reasoning |
+| JSON output | JSON is pulled out of plain text |
+| Image input | Set a **vision model** (e.g. a Qwen-VL model) for frame checks; without one, consistency and mood checks are rule-based |
+
 Without either, the app still works end to end: scripts are broken down by the rule-based parser,
 and the built-in **offline preview renderer** produces placeholder frames, Ken-Burns clips and tones so you can test the whole pipeline
 for free. Turn it off in Settings to require real generations.
@@ -58,6 +70,12 @@ Next.js API routes ── Prisma ── PostgreSQL
 * Image-to-video starts from the approved frame; text-to-video passes character references instead.
 * After every frame the Consistency agent compares it with the reference sheet (vision model) and logs findings with a one-click
   "apply fix & regenerate"; the Mood agent checks drift from the style lock.
+
+### Shared project memory
+Each project has one memory that the user and every agent share (**Memory** tab in the studio). Entries have a key, a category
+(decision, preference, character, style, continuity, note), a version and who last changed them. Every agent gets the memory in its
+system prompt and can `memory_search`, `memory_write` (replace or append, with optional version check) and `memory_delete`;
+the Director, sub-agents and the automatic frame checks all see the same entries. Tell the Director “remember …” to add one yourself.
 
 ### Live progress
 Each generation is a `Job` row (queued / running / succeeded / failed, progress %, current step). Workers publish every
