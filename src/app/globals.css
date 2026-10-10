@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #07070a;
+  --color-panel: #0e0e13;
+  --color-panel-2: #14141b;
+  --color-panel-3: #1b1b24;
+  --color-line: #24242f;
+  --color-line-2: #31313f;
+  --color-fg: #ecebf1;
+  --color-muted: #8b8a99;
+  --color-dim: #5d5c6b;
+  --color-accent: #f5a524;
+  --color-accent-2: #ff6b3d;
+  --color-cyan: #22d3ee;
+  --color-violet: #a78bfa;
+  --color-pink: #f472b6;
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-err: #f87171;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --animate-shimmer: shimmer 2s linear infinite;
+  --animate-pulse-ring: pulse-ring 1.6s ease-out infinite;
+}
+
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgb(245 165 36 / 0.45); }
+  100% { box-shadow: 0 0 0 10px rgb(245 165 36 / 0); }
+}
+
+html, body { height: 100%; }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle film grain over everything */
+body::after {
+  content: "";
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+::selection { background: rgb(245 165 36 / 0.35); }
+
+* { scrollbar-width: thin; scrollbar-color: var(--color-line-2) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--color-line-2); border-radius: 8px; }
+
+.shimmer {
+  background: linear-gradient(90deg, transparent 0%, rgb(255 255 255 / 0.06) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+}
+
+.glow-accent { box-shadow: 0 0 0 1px rgb(245 165 36 / 0.35), 0 8px 40px -12px rgb(245 165 36 / 0.45); }
+
+.letterbox::before, .letterbox::after {
+  content: ""; position: absolute; left: 0; right: 0; height: 7%; background: #000; z-index: 1;
+}
+.letterbox::before { top: 0; }
+.letterbox::after { bottom: 0; }
+
+.text-gradient {
+  background: linear-gradient(90deg, var(--color-accent), var(--color-accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

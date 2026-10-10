@@ -1,0 +1,302 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Stage {
+  SCRIPT
+  STORYBOARD
+  VIDEO
+  AUDIO
+  EXPORT
+}
+
+enum GenStatus {
+  IDLE
+  QUEUED
+  GENERATING
+  DONE
+  FAILED
+}
+
+enum AssetKind {
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  LINK
+}
+
+enum AssetRole {
+  CHARACTER_REF
+  STYLE_REF
+  MOODBOARD
+  VIDEO_REF
+  SHOT_IMAGE
+  SHOT_VIDEO
+  VOICEOVER
+  MUSIC
+  SFX
+  SCRIPT
+  EXPORT
+  MASK
+}
+
+enum JobType {
+  PARSE_SCRIPT
+  IMAGE
+  VIDEO
+  UPSCALE
+  INPAINT
+  TTS
+  MUSIC
+  SFX
+  EXPORT_MP4
+  EXPORT_PDF
+  AGENT_CHECK
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+enum TrackType {
+  VIDEO
+  VOICE
+  MUSIC
+  SFX
+}
+
+enum AgentKind {
+  USER
+  DIRECTOR
+  CONSISTENCY
+  MOOD
+  MONITOR
+  AUDIO
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  title       String
+  logline     String?
+  stage       Stage    @default(SCRIPT)
+  aspectRatio String   @default("16:9")
+  scriptText  String?
+  /// Global style lock: { enabled, prompt, mood, tone, palette[], negative, referenceAssetIds[] }
+  styleLock   Json     @default("{}")
+  /// Default models: { image, video, tts, music }
+  defaults    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  scenes     Scene[]
+  shots      Shot[]
+  characters Character[]
+  assets     Asset[]
+  jobs       Job[]
+  clips      TimelineClip[]
+  messages   AgentMessage[]
+  findings   AgentFinding[]
+}
+
+model Scene {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  index     Int
+  heading   String
+  location  String?
+  timeOfDay String?
+  summary   String?
+  shots     Shot[]
+
+  @@index([projectId, index])
+}
+
+model Shot {
+  id             String    @id @default(cuid())
+  projectId      String
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sceneId        String?
+  scene          Scene?    @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  order          Int
+  title          String
+  description    String    @default("")
+  dialogue       String?
+  speaker        String?
+  shotType       String?   // WIDE, MEDIUM, CLOSE_UP, ...
+  cameraMove     String?   // static, dolly-in, pan-left, ...
+  durationSec    Float     @default(4)
+  prompt         String    @default("")
+  negativePrompt String?
+  /// Per-shot style override; when set it replaces the project style lock for this shot.
+  styleOverride  Json?
+  imageModel     String?
+  videoModel     String?
+  imageStatus    GenStatus @default(IDLE)
+  videoStatus    GenStatus @default(IDLE)
+  audioStatus    GenStatus @default(IDLE)
+  approved       Boolean   @default(false)
+  imageAssetId   String?
+  videoAssetId   String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  characters ShotCharacter[]
+  assets     Asset[]
+  jobs       Job[]
+  findings   AgentFinding[]
+
+  @@index([projectId, order])
+}
+
+model Character {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  description String   @default("")
+  /// Locked characters always inject their reference images into every generation they appear in.
+  locked      Boolean  @default(true)
+  voiceId     Int?
+  color       String   @default("#f59e0b")
+  createdAt   DateTime @default(now())
+
+  references Asset[]
+  shots      ShotCharacter[]
+
+  @@unique([projectId, name])
+}
+
+model ShotCharacter {
+  shotId      String
+  characterId String
+  shot        Shot      @relation(fields: [shotId], references: [id], onDelete: Cascade)
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@id([shotId, characterId])
+}
+
+model Asset {
+  id          String    @id @default(cuid())
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  kind        AssetKind
+  role        AssetRole
+  name        String?
+  storageKey  String?
+  url         String
+  mimeType    String?
+  /// front | side | three_quarter | back | full_body
+  angle       String?
+  characterId String?
+  character   Character? @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  shotId      String?
+  shot        Shot?      @relation(fields: [shotId], references: [id], onDelete: Cascade)
+  /// Provider-side identifier (e.g. Magnific creation identifier) so refs aren't re-uploaded.
+  providerRef String?
+  durationSec Float?
+  meta        Json      @default("{}")
+  createdAt   DateTime  @default(now())
+
+  clips TimelineClip[]
+
+  @@index([projectId, role])
+}
+
+model Job {
+  id          String    @id @default(cuid())
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  shotId      String?
+  shot        Shot?     @relation(fields: [shotId], references: [id], onDelete: Cascade)
+  type        JobType
+  status      JobStatus @default(QUEUED)
+  progress    Int       @default(0)
+  step        String?
+  provider    String?
+  input       Json      @default("{}")
+  output      Json?
+  error       String?
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([projectId, status])
+}
+
+model TimelineClip {
+  id         String    @id @default(cuid())
+  projectId  String
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  track      TrackType
+  lane       Int       @default(0)
+  assetId    String?
+  asset      Asset?    @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  shotId     String?
+  label      String?
+  start      Float
+  inPoint    Float     @default(0)
+  outPoint   Float
+  transition String    @default("none")
+  volume     Float     @default(1)
+
+  @@index([projectId, track])
+}
+
+model AgentMessage {
+  id        String    @id @default(cuid())
+  projectId String
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agent     AgentKind
+  role      String
+  content   String
+  toolCalls Json?
+  toolCallId String?
+  createdAt DateTime  @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+model AgentFinding {
+  id         String    @id @default(cuid())
+  projectId  String
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  shotId     String?
+  shot       Shot?     @relation(fields: [shotId], references: [id], onDelete: Cascade)
+  agent      AgentKind
+  severity   String    @default("info") // info | warn | error
+  message    String
+  suggestion String?
+  /// Optional auto-fix the user can apply: { action: "regenerate_image", promptPatch: "..." }
+  fix        Json?
+  resolved   Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+}
+
+/// Singleton (id = "global"). Holds the OpenAI-compatible endpoint and generation backends.
+model AppSettings {
+  id          String   @id @default("global")
+  llmBaseUrl  String   @default("https://api.openai.com/v1")
+  llmApiKey   String?
+  llmModel    String   @default("gpt-4o")
+  /// Optional per-agent model overrides: { DIRECTOR: "...", CONSISTENCY: "...", ... }
+  agentModels Json     @default("{}")
+  /// Whether sub-agents run automatically after generations finish.
+  autoAgents  Boolean  @default(true)
+  /// Generation backends, tried in priority order.
+  /// [{ id, name, kind: "magnific"|"mcp"|"mock", url, token, enabled, capabilities: [...], toolMap }]
+  mcpServers  Json     @default("[]")
+  updatedAt   DateTime @updatedAt
+}
