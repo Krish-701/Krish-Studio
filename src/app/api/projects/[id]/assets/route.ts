@@ -64,6 +64,18 @@ export const POST = route(async (req: Request, { params }: Params<"id">) => {
       },
     });
     created.push(asset);
+    // "Use my own song": the track goes on the music lane from 0 and sets the film's length.
+    if (role === "MUSIC" && form.get("song") === "true" && kind === "AUDIO") {
+      const old = await db.asset.findMany({ where: { projectId: id, role: "MUSIC", meta: { path: ["song"], equals: true } }, select: { id: true } });
+      await db.timelineClip.deleteMany({ where: { projectId: id, track: "MUSIC", assetId: { in: old.map((o) => o.id) } } });
+      await db.asset.update({ where: { id: asset.id }, data: { meta: { uploaded: true, song: true } } });
+      const len = durationSec ?? 0;
+      if (len > 0) {
+        await db.timelineClip.create({ data: { projectId: id, track: "MUSIC", assetId: asset.id, start: 0, inPoint: 0, outPoint: len, volume: 1 } });
+        await db.project.update({ where: { id }, data: { targetRuntimeSec: Math.round(len) } });
+      }
+      publish(id, { type: "refresh", scope: "project" });
+    }
     if (role === "MOTION_REF" && shotId) await db.shot.update({ where: { id: shotId }, data: { motionRefAssetId: asset.id } });
     if (role === "CHARACTER_SHEET" && characterId) await db.character.update({ where: { id: characterId }, data: { sheetAssetId: asset.id } });
 

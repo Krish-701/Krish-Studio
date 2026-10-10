@@ -209,6 +209,18 @@ export const mockProvider: GenerationProvider = {
     return { buffer: buf, mime: "video/mp4", durationSec: req.durationSec, meta: { preview: true } };
   },
 
+  async lipsync(req, ctx) {
+    // Preview: lay the dialogue over the clip (no mouth movement).
+    await ctx.onProgress(20, "Laying dialogue on clip");
+    if (!req.video.key || !req.audio.key) throw new Error("Preview lip sync needs stored files");
+    const dir = await tmpDir();
+    const out = path.join(dir, "ls.mp4");
+    await ffmpeg(["-i", await localPath(req.video.key), "-i", await localPath(req.audio.key), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", out]);
+    const buf = await fs.readFile(out);
+    await fs.rm(dir, { recursive: true, force: true });
+    return { buffer: buf, mime: "video/mp4", meta: { preview: true } };
+  },
+
   async tts(req, ctx) {
     await fakeProgress(ctx, ["Synthesising voice"]);
     const sec = Math.max(1.5, Math.min(30, req.text.split(/\s+/).length / 2.6));

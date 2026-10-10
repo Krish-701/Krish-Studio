@@ -206,6 +206,14 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
       return { queued: (await svc.queueMultishot(c.projectId, { shotIds: ids, sequenceId: seq?.id, missing: ids ? undefined : "video", model: a.model })).length };
     },
   },
+  lip_sync: {
+    schema: S("Re-sync shots' clips to their voiceover so mouths match the dialogue (needs a clip and a voiceover).", { shots: strArr("Shot ids or numbers") }, ["shots"]),
+    impl: async (a, c) => {
+      const ids = (await shotIdsFromRefs(c.projectId, a.shots)) ?? [];
+      for (const id of ids) await enqueue({ projectId: c.projectId, shotId: id, type: "LIPSYNC" });
+      return { queued: ids.length };
+    },
+  },
   get_progress: {
     schema: S("Live generation status: queued/running/failed jobs with errors."),
     impl: async (_, c) => {

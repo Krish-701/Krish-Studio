@@ -22,6 +22,11 @@ export const POST = route(async (req: Request, { params }: Params<"id">) => {
       return ok({ jobs: (await queueVideos(id, target, b.mode, { model: b.model })).length });
     case "multishot":
       return ok({ jobs: (await queueMultishot(id, { shotIds: Array.isArray(target) ? target : undefined, missing: target === "missing" ? "video" : undefined, model: b.model })).length });
+    case "lipsync": {
+      let n = 0;
+      for (const s of b.shotIds ?? []) await enqueue({ projectId: id, shotId: s, type: "LIPSYNC" }).then(() => n++);
+      return ok({ jobs: n });
+    }
     case "voice": {
       let n = 0;
       for (const s of b.shotIds ?? []) await queueVoiceover(id, s, b.text).then(() => n++);

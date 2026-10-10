@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import useSWR from "swr";
-import { AlertTriangle, Clapperboard, Eye, Link2, Loader2, Upload, X } from "lucide-react";
+import { AlertTriangle, Clapperboard, Eye, Link2, Loader2, Upload, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Label, NativeSelect, Textarea } from "@/components/ui/input";
@@ -71,6 +71,7 @@ export function MotionPanel({ shot, f, set, videoModel }: { shot: Shot; f: Motio
       <div className="space-y-1.5">
         <Label>How the shot moves</Label>
         <Textarea rows={3} value={f.motionPrompt} onChange={(e) => set({ motionPrompt: e.target.value })} placeholder="Action and camera for the video model, e.g. She turns to the window as the camera pushes in." />
+        <RewriteButton shotId={shot.id} target="motion" onText={(t) => set({ motionPrompt: t })} />
         <div className="flex flex-wrap gap-1">
           {motionTemplates.map((t) => (
             <button key={t.name} onClick={() => set({ motionPrompt: t.prompt, cameraMove: t.camera })} className={cn("rounded-md border px-2 py-0.5 text-[11px] transition", f.cameraMove === t.camera ? "border-accent/60 text-accent" : "border-line-2 text-muted hover:text-fg")}>
@@ -219,3 +220,30 @@ export function PlanPreview({ shotId, model, mode, kind = "video" }: { shotId: s
   );
 }
 
+
+/** "Rewrite with AI": asks for a new image or motion prompt, with an optional note ("make it rainier"). */
+export function RewriteButton({ shotId, target, onText, save }: { shotId: string; target: "prompt" | "motion"; onText: (t: string) => void; save?: () => Promise<void> }) {
+  const [busy, setBusy] = React.useState(false);
+  const [note, setNote] = React.useState("");
+  const [open, setOpen] = React.useState(false);
+  const go = async () => {
+    setBusy(true);
+    try {
+      if (save) await save();
+      const r = await api<{ text: string }>(`/api/shots/${shotId}/rewrite`, { body: { target, instruction: note || undefined } });
+      onText(r.text);
+      setOpen(false);
+      setNote("");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Button size="xs" variant="ghost" disabled={busy} onClick={() => (open ? go() : setOpen(true))}>
+        {busy ? <Loader2 className="animate-spin" /> : <Wand2 />} {open ? "Rewrite" : "Rewrite with AI"}
+      </Button>
+      {open && <input autoFocus value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Optional: what to change" className="h-6 min-w-0 flex-1 rounded-md border border-line-2 bg-panel-2 px-2 text-[11px] outline-none" />}
+    </div>
+  );
+}

@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import { createHash } from "crypto";
 import { promises as fs } from "fs";
 import os from "os";
@@ -20,11 +21,36 @@ const ENC = ["-c:v", "libx264", "-preset", PRESET, "-crf", "18", "-pix_fmt", "yu
 type Progress = (pct: number, step: string) => void | Promise<void>;
 type Seg = { key: string; head: string | null; body: string | null; tail: string | null };
 /** An audio input placed on the timeline; `inPoint` is set only for source clips (not yet trimmed). */
-type Mixable = { file: string; offset: number; len: number; inPoint?: number; volume?: number };
+type Mixable = { file: string; offset: number; len: number; inPoint?: number; volume?: number; fadeIn?: number; fadeOut?: number };
 
 const hash = (...parts: unknown[]) => createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 20);
 const exists = (f: string) => fs.access(f).then(() => true, () => false);
 const exportCacheDir = (projectId: string) => path.join(process.cwd(), "storage", "cache", projectId);
+
+/** Deletes every cached conform / transition / mix file of a project (storage/cache/<projectId>). */
+export async function clearExportCache(projectId: string) {
+  await fs.rm(exportCacheDir(projectId), { recursive: true, force: true });
+}
+
+/** Whether a media file has an audio stream; cached per file version (path + size + mtime) for the process lifetime. */
+const audioProbe = new Map<string, Promise<boolean>>();
+export async function hasAudioStream(file: string): Promise<boolean> {
+  const st = await fs.stat(file).catch(() => null);
+  if (!st) return false;
+  const key = `${file}:${st.size}:${st.mtimeMs}`;
+  let hit = audioProbe.get(key);
+  if (!hit) {
+    hit = new Promise<boolean>((resolve) => {
+      const p = spawn(process.env.FFPROBE_PATH || "ffprobe", ["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", file]);
+      let out = "";
+      p.stdout.on("data", (d) => (out += d));
+      p.on("error", () => resolve(false));
+      p.on("close", (code) => resolve(code === 0 && out.trim().length > 0));
+    });
+    audioProbe.set(key, hit);
+  }
+  return hit;
+}
 
 /** Runs tasks with bounded concurrency, preserving result order. */
 export async function pool<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
@@ -165,14 +191,26 @@ export async function exportMp4(projectId: string, onProgress: Progress) {
     const picture = path.join(dir, "picture.mp4");
     await ffmpeg(["-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-an", picture], (sec) => onProgress(70 + Math.round((sec / total) * 14), "Joining clips"));
 
-    // 4) Audio: mix in bounded chunks, cached as a whole.
+    // 4) Audio: voice/music/sfx clips plus the sound carried by video clips (generated "with sound"),
+    // mixed in bounded chunks and cached as a whole. Clip sound is placed exactly where the clip's frames
+    // land in the picture (frame plan), trimmed to the same frame count, and crossfaded under transitions.
+    const items: (Mixable & { key: string })[] = await Promise.all(
+      audio.map(async (c) => ({ key: c.asset!.storageKey!, file: await localPath(c.asset!.storageKey!), offset: c.start, len: clipLen(c), inPoint: c.inPoint, volume: c.volume })),
+    );
+    let at = 0;
+    for (const p of plan) {
+      const offset = (at - p.dIn) / fps;
+      at += p.frames - p.dIn;
+      const a = p.c.asset!;
+      if (a.mimeType?.startsWith("image/")) continue;
+      const file = await localPath(a.storageKey!);
+      if (!(await hasAudioStream(file))) continue;
+      items.push({ key: a.storageKey!, file, offset, len: p.frames / fps, inPoint: p.c.inPoint, volume: p.c.volume ?? 1, fadeIn: p.dIn / fps, fadeOut: p.dOut / fps });
+    }
     let mixed: string | null = null;
-    if (audio.length) {
-      await onProgress(84, `Mixing ${audio.length} audio clips`);
-      const items: Mixable[] = await Promise.all(
-        audio.map(async (c) => ({ file: await localPath(c.asset!.storageKey!), offset: c.start, len: clipLen(c), inPoint: c.inPoint, volume: c.volume })),
-      );
-      mixed = path.join(cache, `mix-${hash(CACHE_VERSION, audio.map((c) => [c.asset!.storageKey, c.start, c.inPoint, c.outPoint, c.volume]), totalFrames, fps)}.m4a`);
+    if (items.length) {
+      await onProgress(84, `Mixing ${items.length} audio clips`);
+      mixed = path.join(cache, `mix-${hash(CACHE_VERSION, items.map((c) => [c.key, c.offset, c.len, c.inPoint, c.volume, c.fadeIn, c.fadeOut]), totalFrames, fps)}.m4a`);
       used.add(mixed);
       const out = mixed;
       await cached(out, async (tmp) => {
@@ -198,7 +236,7 @@ export async function exportMp4(projectId: string, onProgress: Progress) {
     const key = newKey(projectId, "exports", "video/mp4");
     const stored = await storeFile(key, out, "video/mp4");
     const asset = await db.asset.create({
-      data: { projectId, kind: "VIDEO", role: "EXPORT", name: `${project.title}.mp4`, storageKey: stored.key, url: stored.url, mimeType: "video/mp4", durationSec: total, meta: { width: W, height: H, fps, clips: segs.length, transitions: plan.filter((p) => p.tr).length, audioClips: audio.length } },
+      data: { projectId, kind: "VIDEO", role: "EXPORT", name: `${project.title}.mp4`, storageKey: stored.key, url: stored.url, mimeType: "video/mp4", durationSec: total, meta: { width: W, height: H, fps, clips: segs.length, transitions: plan.filter((p) => p.tr).length, audioClips: audio.length, clipSound: items.length - audio.length } },
     });
     return { assetId: asset.id, url: asset.url, durationSec: total };
   } finally {
@@ -240,7 +278,7 @@ async function mixAll(items: Mixable[], dir: string, onProgress: (frac: number) 
         // Each clip is trimmed/padded to exactly the time until the next clip starts, then all are concatenated.
         const parts = chunk.map((c, j) => {
           const slot = j < chunk.length - 1 ? chunk[j + 1].offset - c.offset : c.len;
-          return `[${j}:a]atrim=start=${c.inPoint ?? 0}:duration=${c.len},asetpts=PTS-STARTPTS,${fmt},volume=${c.volume ?? 1},apad=whole_dur=${slot.toFixed(6)},atrim=duration=${slot.toFixed(6)}[a${j}]`;
+          return `[${j}:a]atrim=start=${c.inPoint ?? 0}:duration=${c.len},asetpts=PTS-STARTPTS,${fmt},volume=${c.volume ?? 1}${c.fadeIn ? `,afade=t=in:st=0:d=${c.fadeIn.toFixed(6)}` : ""}${c.fadeOut ? `,afade=t=out:st=${(c.len - c.fadeOut).toFixed(6)}:d=${c.fadeOut.toFixed(6)}` : ""},apad=whole_dur=${slot.toFixed(6)},atrim=duration=${slot.toFixed(6)}[a${j}]`;
         });
         const file = await render(chunk, [...parts, `${chunk.map((_, j) => `[a${j}]`).join("")}concat=n=${chunk.length}:v=0:a=1[aout]`].join(";"));
         next.push({ file, offset: base, len: last.offset + last.len - base });

@@ -97,10 +97,17 @@ Consistency tools built on that:
   the previous clip). Motion templates, colour presets (Natural, Moody, Vibrant, Vintage, Teal & Orange, Bleach Bypass,
   Golden Hour, Noir) and a motion reference video per shot.
 
+### Shot tools
+**Rewrite with AI** rewrites a shot's image or motion prompt from the scene, cast, set and look (with an optional note such as
+"make it rainier"). **Lip sync** re-syncs a clip's mouth movement to its voiceover (Magnific `video_speak`). **Use my own song**
+in the wizard puts your track on the music lane, sets the runtime to its length and tells the writer to cut to it.
+**Watch** plays the cut in story order with the script and dialogue beside it.
+
 ### Export and editor hand-off
 The MP4 export conforms each clip once into a cache (only changed clips re-encode), re-encodes just the transition frames, and joins everything without a second encode; audio is mixed in lanes, so a 3-hour cut
 works. **Edit package** zips an FCPXML and EDL timeline, a production log (which model made each shot) and the media (or a
-`download_media.sh`) for DaVinci Resolve and Final Cut (FCPXML) or Premiere (EDL: video and dissolves).
+`download_media.sh`): `timeline.fcpxml` for DaVinci Resolve and Final Cut, `timeline.xml` (FCP7 XML) for Premiere Pro, and
+`timeline.edl`. Sound generated with a clip is kept in the mix and in the timelines.
 
 ### Character consistency
 * Characters have front / 3/4 / side / back / full-body reference slots and a **lock**.

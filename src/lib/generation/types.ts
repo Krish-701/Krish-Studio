@@ -58,6 +58,14 @@ export interface ExtendRequest {
   withSound?: boolean;
 }
 
+export interface LipsyncRequest {
+  /** The clip whose mouth movement is re-synced. */
+  video: RefImage;
+  /** The dialogue audio. */
+  audio: RefImage;
+  voiceId?: number | null;
+}
+
 export interface TtsRequest {
   text: string;
   voiceId?: number | null;
@@ -113,4 +121,5 @@ export interface GenerationProvider {
   upscale?(req: UpscaleRequest, ctx: GenContext): Promise<GenResult>;
   inpaint?(req: InpaintRequest, ctx: GenContext): Promise<GenResult>;
   extend?(req: ExtendRequest, ctx: GenContext): Promise<GenResult>;
+  lipsync?(req: LipsyncRequest, ctx: GenContext): Promise<GenResult>;
 }

@@ -83,9 +83,17 @@ async function bible(projectId: string) {
     els.filter((e) => e.kind === "location").length && `Film sets (reuse them; set "location" to one of these names):\n${els.filter((e) => e.kind === "location").map((e) => `- ${e.name}: ${e.description}`).join("\n")}`,
     els.filter((e) => e.kind === "prop").length && `Key props:\n${els.filter((e) => e.kind === "prop").map((e) => `- ${e.name}: ${e.description}`).join("\n")}`,
     project.sequences.length && `Outline:\n${project.sequences.map((s) => `${s.index + 1}. [Act ${s.act}] ${s.title}: ${s.summary}`).join("\n")}`,
+    await songNote(projectId),
     await memoryPrompt(projectId, 2500),
   ];
   return { project, chars, els, text: lines.filter(Boolean).join("\n\n") };
+}
+
+/** A music video cut to the user's own song: pace and length follow the track. */
+async function songNote(projectId: string) {
+  const song = await db.asset.findFirst({ where: { projectId, role: "MUSIC", meta: { path: ["song"], equals: true } }, orderBy: { createdAt: "desc" } });
+  if (!song) return null;
+  return `Soundtrack: the film is cut to the user's song "${song.name}" (${Math.round(song.durationSec ?? 0)} s). Match the runtime exactly, cut on the beat, build energy toward choruses, and leave dialogue out unless the story needs it.`;
 }
 
 const WRITER_SYSTEM = `You are a professional screenwriter and storyboard artist writing an AI-generated film.

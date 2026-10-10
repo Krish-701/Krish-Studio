@@ -15,7 +15,7 @@ export type Clip = ProjectState["clips"][number];
 export type Finding = ProjectState["findings"][number];
 export type Asset = ProjectState["assets"][number];
 
-export type View = "script" | "characters" | "style" | "storyboard" | "timeline" | "export";
+export type View = "script" | "characters" | "style" | "storyboard" | "timeline" | "watch" | "export";
 
 interface AgentLive {
   status: "thinking" | "idle" | "acting";
@@ -63,7 +63,7 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
     if (!data || didInit.current) return;
     didInit.current = true;
     const fromHash = typeof window !== "undefined" ? (window.location.hash.slice(1) as View) : null;
-    if (fromHash && ["script", "characters", "style", "storyboard", "timeline", "export"].includes(fromHash)) setViewState(fromHash);
+    if (fromHash && ["script", "characters", "style", "storyboard", "timeline", "watch", "export"].includes(fromHash)) setViewState(fromHash);
     else if (!data.shots.length && !data.sequences.length && data.project.setupDone) setViewState("script");
     else if (data.project.stage === "VIDEO" || data.project.stage === "AUDIO") setViewState("timeline");
   }, [data]);

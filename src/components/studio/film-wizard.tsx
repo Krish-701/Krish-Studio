@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { ArrowLeft, ArrowRight, Check, Clapperboard, FileText, ImagePlus, Loader2, MapPin, Monitor, Plus, Smartphone, Sparkles, Trash2, Upload, Users, Wand2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Clapperboard, FileText, ImagePlus, Loader2, MapPin, Monitor, Music, Plus, Smartphone, Sparkles, Trash2, Upload, Users, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Label, NativeSelect, Textarea } from "@/components/ui/input";
@@ -245,6 +245,7 @@ function StoryStep() {
         <Textarea rows={12} value={synopsis} onChange={(e) => setSynopsis(e.target.value)} onBlur={() => synopsis !== (p.synopsis ?? "") && patch({ synopsis })} placeholder="A lighthouse keeper on a remote island finds a stranger washed ashore the night the storm of the century arrives…" />
         <div className="text-right text-[10px] text-dim">{synopsis.trim().split(/\s+/).filter(Boolean).length} words</div>
       </div>
+      <SongPicker />
       <div className="rounded-2xl border border-dashed border-line-2 p-4">
         <div className="flex flex-wrap items-center gap-3">
           <FileText className="size-5 text-muted" />
@@ -453,6 +454,43 @@ function WriteStep() {
         {sh.sequences > 1 && <Button size="lg" variant="secondary" disabled={busy || missing} onClick={() => write("outline")}>Outline first</Button>}
       </div>
       {sh.sequences > 1 && <p className="text-xs text-dim">&quot;Outline first&quot; writes the acts and sequences so you can review them, then you write each sequence from the storyboard.</p>}
+    </div>
+  );
+}
+
+/** "Use my own song": upload a track; the film is cut to it and runs as long as it does. */
+function SongPicker() {
+  const { state, projectId } = useStudio();
+  const [busy, setBusy] = React.useState(false);
+  const song = state!.assets.find((a) => a.role === "MUSIC" && (a.meta as { song?: boolean } | null)?.song);
+  const upload = async (file: File) => {
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.append("role", "MUSIC");
+      form.append("song", "true");
+      form.append("lockStyle", "false");
+      form.append("files", file);
+      await api(`/api/projects/${projectId}/assets`, { form });
+      toast.success("Song added. The film will be cut to it.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="rounded-2xl border border-dashed border-line-2 p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <Music className="size-5 text-muted" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">Use my own song</div>
+          <div className="text-xs text-muted">{song ? `${song.name} · ${runtimeLabel(song.durationSec ?? 0)}. The runtime now matches the song and shots are cut to it.` : "Upload a track and the film is written to its length and cut to the music."}</div>
+          {song && <audio src={song.url} controls className="mt-2 h-8 w-full max-w-sm" />}
+        </div>
+        <label className={cn("inline-flex h-8 cursor-pointer items-center gap-2 rounded-lg border border-line-2 px-3 text-xs hover:border-accent/50", busy && "pointer-events-none opacity-50")}>
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />} {song ? "Replace song" : "Upload song"}
+          <input type="file" accept="audio/*" className="hidden" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+        </label>
+      </div>
     </div>
   );
 }

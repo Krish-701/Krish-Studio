@@ -216,6 +216,14 @@ export function magnificProvider(cfg: McpServerConfig): MagnificProvider {
       return waitFor(identifiersOf(res), "video", ctx, 240, "Extending clip");
     },
 
+    async lipsync(req, ctx) {
+      const videoUrl = await ensureRef(req.video, ctx);
+      const audioUrl = await ensureRef(req.audio, ctx);
+      await ctx.onProgress(15, "Submitting lip sync");
+      const res = await callTool(cfg, "video_speak", { videoUrl, audioUrl, ...(req.voiceId ? { voiceId: req.voiceId } : {}) });
+      return waitFor(identifiersOf(res), "video", ctx, 180, "Syncing lips");
+    },
+
     async tts(req, ctx) {
       let voiceId = req.voiceId ?? cachedVoice;
       if (!voiceId) {

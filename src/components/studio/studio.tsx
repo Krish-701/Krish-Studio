@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import Link from "next/link";
-import { Activity, Download, FileText, Film, LayoutGrid, MessageSquare, Palette, Settings, Users, Wifi, WifiOff, X } from "lucide-react";
+import { Activity, Play, Download, FileText, Film, LayoutGrid, MessageSquare, Palette, Settings, Users, Wifi, WifiOff, X } from "lucide-react";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/misc";
@@ -16,6 +16,7 @@ import { StyleView } from "./style-view";
 import { StoryboardView } from "./storyboard-view";
 import { TimelineView } from "./timeline-view";
 import { ExportView } from "./export-view";
+import { WatchView } from "./watch-view";
 import { ShotDrawer } from "./shot-drawer";
 import { FilmWizard, runtimeLabel } from "./film-wizard";
 
@@ -25,6 +26,7 @@ const NAV: { view: View; label: string; icon: React.ElementType }[] = [
   { view: "style", label: "Style & refs", icon: Palette },
   { view: "storyboard", label: "Storyboard", icon: LayoutGrid },
   { view: "timeline", label: "Timeline", icon: Film },
+  { view: "watch", label: "Watch", icon: Play },
   { view: "export", label: "Export", icon: Download },
 ];
 
@@ -115,6 +117,7 @@ function Shell() {
               {view === "style" && <StyleView />}
               {view === "storyboard" && <StoryboardView />}
               {view === "timeline" && <TimelineView />}
+              {view === "watch" && <WatchView />}
               {view === "export" && <ExportView />}
             </>
           )}

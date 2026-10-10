@@ -99,7 +99,7 @@ function setShotStatus(job: Job, status: "QUEUED" | "GENERATING" | "DONE" | "FAI
     return;
   }
   if (!job.shotId) return;
-  const field = job.type === "IMAGE" || job.type === "UPSCALE" || job.type === "INPAINT" ? "imageStatus" : job.type === "VIDEO" || job.type === "EXTEND_VIDEO" ? "videoStatus" : job.type === "TTS" ? "audioStatus" : null;
+  const field = job.type === "IMAGE" || job.type === "UPSCALE" || job.type === "INPAINT" ? "imageStatus" : job.type === "VIDEO" || job.type === "EXTEND_VIDEO" || job.type === "LIPSYNC" ? "videoStatus" : job.type === "TTS" ? "audioStatus" : null;
   if (!field) return;
   db.shot
     .update({ where: { id: job.shotId }, data: { [field]: status } })
@@ -263,6 +263,7 @@ async function run(job: Job, ctx: GenContext): Promise<unknown> {
     case "CONTACT_SHEET":
     case "MULTISHOT_VIDEO":
     case "EXTEND_VIDEO":
+    case "LIPSYNC":
       return runLongform(job, ctx);
 
     case "AGENT_CHECK": {

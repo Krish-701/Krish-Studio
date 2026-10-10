@@ -84,6 +84,27 @@ export async function runLongform(job: Job, ctx: GenContext): Promise<unknown> {
       return { assetId: whole.id, shots: req.shotIds.length, durationSec: total, provider: res.providerName };
     }
 
+    case "LIPSYNC": {
+      // Re-sync the shot's clip to its latest voiceover.
+      const shot = await db.shot.findUniqueOrThrow({ where: { id: job.shotId! } });
+      if (!shot.videoAssetId) throw new Error("Make the clip first, then lip sync it.");
+      const voice = await db.asset.findFirst({ where: { shotId: shot.id, role: "VOICEOVER" }, orderBy: { createdAt: "desc" } });
+      if (!voice) throw new Error("Generate this shot's voice first (it has no voiceover yet).");
+      const clip = await db.asset.findUniqueOrThrow({ where: { id: shot.videoAssetId } });
+      const speaker = shot.speaker ? await db.character.findFirst({ where: { projectId: job.projectId, name: { equals: shot.speaker, mode: "insensitive" } } }) : null;
+      const res = await generate("video", ctx, (p) => p.lipsync?.({ video: toRef(clip, "Clip"), audio: { ...toRef(voice, "Dialogue"), media: "audio" }, voiceId: speaker?.voiceId ?? null }, ctx), job.provider);
+      const stored = await persist(job.projectId, "clips", res);
+      const dur = await durationOf(stored.key, clip.durationSec ?? shot.durationSec);
+      const asset = await db.asset.create({
+        data: { projectId: job.projectId, shotId: shot.id, kind: "VIDEO", role: "SHOT_VIDEO", storageKey: stored.key, url: stored.url, mimeType: "video/mp4", durationSec: dur, providerRef: res.providerRef, meta: { mode: "lipsync", from: clip.id, voice: voice.id, provider: res.providerName, preview: !!res.meta?.preview } },
+      });
+      await db.shot.update({ where: { id: shot.id }, data: { videoAssetId: asset.id, videoStatus: "DONE" } });
+      await upsertShotVideoClip(job.projectId, shot.id, asset.id, dur);
+      publish(job.projectId, { type: "shot", shotId: shot.id, patch: { videoAssetId: asset.id, videoStatus: "DONE" } });
+      publish(job.projectId, { type: "refresh", scope: "timeline" });
+      return { assetId: asset.id, durationSec: dur };
+    }
+
     case "EXTEND_VIDEO": {
       // Continue the previous shot's clip into this shot (no cut in time).
       const shot = await db.shot.findUniqueOrThrow({ where: { id: job.shotId! } });

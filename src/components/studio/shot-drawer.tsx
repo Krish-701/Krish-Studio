@@ -10,7 +10,7 @@ import { Switch, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/u
 import { Badge } from "@/components/ui/badge";
 import { api, fetcher } from "@/lib/client";
 import { CAMERA_MOTIONS, SHOT_TYPES } from "@/lib/generation/catalog";
-import { MotionPanel, CLIP_MODES } from "./shot-motion";
+import { MotionPanel, CLIP_MODES, RewriteButton } from "./shot-motion";
 import { useModels } from "./use-models";
 import type { StyleLock } from "@/lib/prompt-builder";
 import { cn } from "@/lib/utils";
@@ -148,6 +148,7 @@ function ShotEditor({ shotId }: { shotId: string }) {
           {shot.imageAssetId && <Button variant="ghost" onClick={() => api(`/api/projects/${projectId}/generate`, { body: { kind: "upscale", shotId, assetId: shot.imageAssetId, scale: "2x" } }).then(() => toast.success("Upscale queued"))}><Maximize2 /> Upscale</Button>}
           {shot.imageAssetId && <Button variant="ghost" onClick={() => { setView("image"); setMasking(true); }}><Paintbrush /> Inpaint</Button>}
           {f.dialogue && <Button variant="ghost" onClick={() => run({ kind: "voice" }, "Voiceover queued")}><Mic /> Voice</Button>}
+          {f.dialogue && shot.videoUrl && <Button variant="ghost" onClick={() => run({ kind: "lipsync" }, "Lip sync queued")} title="Re-sync the clip's mouth movement to the voiceover"><Mic /> Lip sync</Button>}
         </div>
 
         {meta && (
@@ -273,6 +274,7 @@ function ShotEditor({ shotId }: { shotId: string }) {
             <div className="space-y-1.5">
               <Label>Image prompt</Label>
               <Textarea rows={7} value={f.prompt} onChange={(e) => set({ prompt: e.target.value })} placeholder="Leave empty to use the description. Character references and the style lock are added automatically." />
+              <RewriteButton shotId={shotId} target="prompt" onText={(t) => set({ prompt: t })} save={dirty ? save : undefined} />
             </div>
             <div className="space-y-1.5"><Label>Avoid</Label><Input value={f.negativePrompt} onChange={(e) => set({ negativePrompt: e.target.value })} /></div>
             <div className="grid grid-cols-2 gap-2">

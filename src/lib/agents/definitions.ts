@@ -81,7 +81,7 @@ and adjust prompts or models when a shot keeps failing (e.g. content moderation,
     system: `${COMMON}
 You are the AUDIO agent. You cast voices, generate dialogue voiceover for shots with dialogue, write music cues that match the mood,
 and place sound effects at the right moments on the timeline.`,
-    tools: ["memory_search", "memory_write", "memory_delete", "get_project_overview", "list_shots", "list_characters", "update_character", "generate_voiceover", "generate_music", "generate_sfx", "get_progress"],
+    tools: ["memory_search", "memory_write", "memory_delete", "get_project_overview", "list_shots", "list_characters", "update_character", "generate_voiceover", "generate_music", "generate_sfx", "lip_sync", "get_progress"],
   },
 };
 

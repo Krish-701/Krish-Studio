@@ -23,6 +23,8 @@ const csv = (v: unknown) => {
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40) || "clip";
 const metaOf = (a?: { meta: Prisma.JsonValue } | null) => (a?.meta && typeof a.meta === "object" && !Array.isArray(a.meta) ? (a.meta as Record<string, unknown>) : {});
 const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+/** FCPXML level adjustment for a linear clip volume (none at unity). */
+const volumeAdjust = (v: number | null | undefined) => (v === undefined || v === null || v === 1 ? "" : `<adjust-volume amount="${v > 0 ? (20 * Math.log10(v)).toFixed(1) : "-96"}dB"/>`);
 
 /**
  * Editor / festival deliverables: timeline.fcpxml (Resolve / Final Cut), a CMX3600 EDL (video, any NLE),
@@ -103,13 +105,13 @@ export async function exportPackage(projectId: string, onProgress: Progress, opt
       const host = spine.find((it) => at >= it.offset && at < it.offset + it.dur) ?? spine[spine.length - 1];
       const m = media.get(c.asset!.id)!;
       const r = ROLE[c.track];
-      const vol = c.volume === 1 ? "" : `<adjust-volume amount="${c.volume > 0 ? (20 * Math.log10(c.volume)).toFixed(1) : "-96"}dB"/>`;
+      const vol = volumeAdjust(c.volume);
       host.children.push(
         `<asset-clip ref="${m.id}" lane="${r.lane}" offset="${T(host.start + at - host.offset)}" name="${xml(c.label ?? m.name)}" start="${T(F(c.inPoint))}" duration="${T(Math.max(1, F(clipLen(c))))}" audioRole="${r.role}">${vol}</asset-clip>`,
       );
     }
 
-    await onProgress(25, "Writing FCPXML & EDL");
+    await onProgress(25, "Writing FCPXML, XML & EDL");
     const [width, height] = dims(project.aspectRatio, LONG_EDGE[project.resolution] ?? 1920);
     const assets = [...media.values()].map((m) => {
       const p = probes.get(m.asset.id);
@@ -126,7 +128,12 @@ export async function exportPackage(projectId: string, onProgress: Progress, opt
       else {
         const m = media.get(it.clip!.asset!.id)!;
         const shot = it.clip!.shotId ? shotById.get(it.clip!.shotId) : null;
-        out.push(`          <asset-clip ref="${m.id}" offset="${T(it.offset)}" name="${xml(shot ? `${shot.order + 1}. ${shot.title}` : it.clip!.label ?? m.name)}" start="${T(it.start)}" duration="${T(it.dur)}" format="r1" tcFormat="NDF"${close("asset-clip")}`);
+        // Video clips generated with sound keep it as the clip's own (linked) audio, at the clip's level.
+        const sound = m.isVideo && probes.get(m.asset.id)?.audio;
+        const vol = sound ? volumeAdjust(it.clip!.volume) : "";
+        const body = [vol, ...it.children].filter(Boolean).map((k) => `\n            ${k}`).join("");
+        const tail = body ? `>${body}\n          </asset-clip>` : "/>";
+        out.push(`          <asset-clip ref="${m.id}" offset="${T(it.offset)}" name="${xml(shot ? `${shot.order + 1}. ${shot.title}` : it.clip!.label ?? m.name)}" start="${T(it.start)}" duration="${T(it.dur)}" format="r1" tcFormat="NDF"${sound ? ` audioRole="dialogue"` : ""}${tail}`);
       }
       const next = spine[i + 1];
       if (it.xfade && next) out.push(`          <transition name="Cross Dissolve" offset="${T(next.offset)}" duration="${T(it.xfade)}"/>`);
@@ -154,6 +161,116 @@ ${items.join("\n")}
 `;
     await fs.writeFile(path.join(stage, "timeline.fcpxml"), fcpxml);
 
+    // FCP7 XML (xmeml v4) for Premiere Pro: V1 with cross dissolves; A1 holds the video clips' own sound
+    // (linked to the picture), then voice / music / sfx, each packed onto as many tracks as overlaps need.
+    const rate = `<rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>`;
+    const fileDur = (m: { asset: Asset; maxOut: number }) => Math.max(F(probes.get(m.asset.id)?.duration ?? m.asset.durationSec ?? 0), F(m.maxOut), 1);
+    const audioChars = `<samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>`;
+    const videoChars = `<samplecharacteristics>${rate}<width>${width}</width><height>${height}</height><anamorphic>FALSE</anamorphic><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics>`;
+    const fileDefined = new Set<string>();
+    const fileEl = (m: { asset: Asset; name: string; id: string; maxOut: number; isVideo: boolean }) => {
+      if (fileDefined.has(m.id)) return `<file id="file-${m.id}"/>`;
+      fileDefined.add(m.id);
+      const pic = m.isVideo || !!m.asset.mimeType?.startsWith("image/");
+      const snd = pic ? m.isVideo && !!probes.get(m.asset.id)?.audio : true;
+      return `<file id="file-${m.id}"><name>${xml(m.name)}</name><pathurl>media/${xml(encodeURI(m.name))}</pathurl>${rate}<duration>${fileDur(m)}</duration><timecode>${rate}<string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode><media>${pic ? `<video>${videoChars}</video>` : ""}${snd ? `<audio>${audioChars}<channelcount>2</channelcount></audio>` : ""}</media></file>`;
+    };
+    const levels = (v: number | null | undefined) =>
+      v === undefined || v === null || v === 1
+        ? ""
+        : `<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype><parameter><parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax><value>${Math.max(0, v).toFixed(5)}</value></parameter></effect></filter>`;
+    const transitionEl = (start: number, end: number, kind: "video" | "audio") =>
+      kind === "video"
+        ? `<transitionitem>${rate}<start>${start}</start><end>${end}</end><alignment>start</alignment><effect><name>Cross Dissolve</name><effectid>Cross Dissolve</effectid><effectcategory>Dissolve</effectcategory><effecttype>transition</effecttype><mediatype>video</mediatype><wipecode>0</wipecode><wipeaccuracy>100</wipeaccuracy><startratio>0</startratio><endratio>1</endratio><reverse>FALSE</reverse></effect></transitionitem>`
+        : `<transitionitem>${rate}<start>${start}</start><end>${end}</end><alignment>start</alignment><effect><name>Cross Fade (+3dB)</name><effectid>KGAudioTransCrossFade3dB</effectid><effecttype>transition</effecttype><mediatype>audio</mediatype></effect></transitionitem>`;
+    type XItem = { id: string; m: ReturnType<typeof media.get> & object; name: string; start: number; end: number; in: number; out: number; volume?: number; tIn?: number; tOut?: number; link?: string };
+    let xid = 0;
+    const vItems: XItem[] = [];
+    const syncItems: XItem[] = [];
+    const xClips = spine.filter((it) => it.kind === "clip");
+    for (const [i, it] of xClips.entries()) {
+      const c = it.clip!;
+      const m = media.get(c.asset!.id)!;
+      const shot = c.shotId ? shotById.get(c.shotId) : null;
+      const prev = xClips[i - 1];
+      const tIn = prev?.xfade && prev.offset + prev.dur === it.offset ? prev.xfade : 0;
+      const tOut = it.xfade && xClips[i + 1]?.offset === it.offset + it.dur ? it.xfade : 0;
+      const v: XItem = { id: `clipitem-${++xid}`, m, name: shot ? `${shot.order + 1}. ${shot.title}` : c.label ?? m.name, start: it.offset, end: it.offset + it.dur, in: it.start, out: it.start + it.dur, tIn, tOut };
+      vItems.push(v);
+      if (m.isVideo && probes.get(m.asset.id)?.audio) {
+        const a: XItem = { ...v, id: `clipitem-${++xid}`, volume: c.volume, link: v.id };
+        v.link = a.id;
+        syncItems.push(a);
+      }
+    }
+    // An audio cross fade needs sound on both sides of the edit; otherwise the clip's sound just cuts.
+    for (const [i, v] of vItems.entries()) {
+      const a = v.link ? syncItems.find((x) => x.id === v.link) : null;
+      if (!a) continue;
+      if (!vItems[i - 1]?.link) a.tIn = 0;
+      if (!vItems[i + 1]?.link) a.tOut = 0;
+    }
+    // Voice / music / sfx: interval-partitioned so clips on one track never overlap.
+    const audioTracks: XItem[][] = [syncItems];
+    for (const track of ["VOICE", "MUSIC", "SFX"]) {
+      const lanes: XItem[][] = [];
+      for (const c of audio.filter((a) => a.track === track).sort((a, b) => a.start - b.start)) {
+        const m = media.get(c.asset!.id)!;
+        const start = F(c.start), len = Math.max(1, F(clipLen(c)));
+        const item: XItem = { id: `clipitem-${++xid}`, m, name: c.label ?? m.name, start, end: start + len, in: F(c.inPoint), out: F(c.inPoint) + len, volume: c.volume };
+        const lane = lanes.find((l) => l[l.length - 1].end <= start);
+        if (lane) lane.push(item);
+        else lanes.push([item]);
+      }
+      audioTracks.push(...lanes);
+    }
+    const tracks = audioTracks.filter((t, i) => i === 0 || t.length);
+    const where = new Map<string, { track: number; index: number }>();
+    vItems.forEach((it, i) => where.set(it.id, { track: 1, index: i + 1 }));
+    tracks.forEach((t, ti) => t.forEach((it, i) => where.set(it.id, { track: ti + 1, index: i + 1 })));
+    const linkEl = (id: string, kind: "video" | "audio") => `<link><linkclipref>${id}</linkclipref><mediatype>${kind}</mediatype><trackindex>${where.get(id)!.track}</trackindex><clipindex>${where.get(id)!.index}</clipindex>${kind === "audio" ? "<groupindex>1</groupindex>" : ""}</link>`;
+    const clipEl = (it: XItem, kind: "video" | "audio") => {
+      const links = it.link ? (kind === "video" ? linkEl(it.id, "video") + linkEl(it.link, "audio") : linkEl(it.link, "video") + linkEl(it.id, "audio")) : "";
+      return `<clipitem id="${it.id}"><masterclipid>masterclip-${it.m.id}</masterclipid><name>${xml(it.name)}</name><enabled>TRUE</enabled><duration>${fileDur(it.m)}</duration>${rate}<start>${it.tIn ? -1 : it.start}</start><end>${it.tOut ? -1 : it.end}</end><in>${it.in}</in><out>${it.out}</out>${fileEl(it.m)}${kind === "audio" ? `<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>${levels(it.volume)}` : ""}${links}</clipitem>`;
+    };
+    const trackBody = (items: XItem[], kind: "video" | "audio") =>
+      items.map((it) => `          ${clipEl(it, kind)}${it.tOut ? `\n          ${transitionEl(it.end, it.end + it.tOut, kind)}` : ""}`).join("\n");
+    const markers = spine
+      .filter((it) => it.kind === "clip")
+      .flatMap((it) => {
+        const scene = it.clip!.shotId ? shotById.get(it.clip!.shotId)?.scene : null;
+        return scene && it.children.some((k) => k.startsWith("<marker")) ? [`    <marker><name>${xml(`${scene.index + 1}. ${scene.heading}`)}</name><comment/><in>${it.offset}</in><out>-1</out></marker>`] : [];
+      });
+    const xmeml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4">
+  <sequence id="sequence-1">
+    <name>${xml(project.title)}</name>
+    <duration>${seqDur}</duration>
+    ${rate}
+    <timecode>${rate}<string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode>
+    <in>-1</in>
+    <out>-1</out>
+${markers.join("\n")}${markers.length ? "\n" : ""}    <media>
+      <video>
+        <format>${videoChars}</format>
+        <track>
+${trackBody(vItems, "video")}
+          <enabled>TRUE</enabled>
+          <locked>FALSE</locked>
+        </track>
+      </video>
+      <audio>
+        <numOutputChannels>2</numOutputChannels>
+        <format>${audioChars}</format>
+${tracks.map((t) => `        <track premiereTrackType="Stereo">\n${t.length ? trackBody(t, "audio") + "\n" : ""}          <enabled>TRUE</enabled>\n          <locked>FALSE</locked>\n          <outputchannelindex>1</outputchannelindex>\n        </track>`).join("\n")}
+      </audio>
+    </media>
+  </sequence>
+</xmeml>
+`;
+    await fs.writeFile(path.join(stage, "timeline.xml"), xmeml);
+
     // CMX3600: one event per clip; dissolves as the classic "C then D" pair.
     const tc = (frames: number) => {
       const f = frames % fps, s = Math.floor(frames / fps);
@@ -163,18 +280,20 @@ ${items.join("\n")}
     let ev = 0;
     const clipItems = spine.filter((it) => it.kind === "clip");
     for (const [i, it] of clipItems.entries()) {
-      const name = media.get(it.clip!.asset!.id)!.name;
+      const m = media.get(it.clip!.asset!.id)!;
+      const name = m.name;
+      const ch = m.isVideo && probes.get(m.asset.id)?.audio ? "AA/V " : "V    ";
       const prev = clipItems[i - 1];
       const num = () => String(++ev).padStart(3, "0");
       const rec = `${tc(it.offset)} ${tc(it.offset + it.dur)}`;
       if (prev?.xfade && prev.offset + prev.dur === it.offset) {
         const n = num();
         const at = prev.start + prev.dur;
-        edl.push(`${n}  AX       V     C        ${tc(at)} ${tc(at)} ${tc(it.offset)} ${tc(it.offset)}`);
-        edl.push(`${n}  AX       V     D    ${String(prev.xfade).padStart(3, "0")} ${tc(it.start)} ${tc(it.start + it.dur)} ${rec}`);
+        edl.push(`${n}  AX       ${ch} C        ${tc(at)} ${tc(at)} ${tc(it.offset)} ${tc(it.offset)}`);
+        edl.push(`${n}  AX       ${ch} D    ${String(prev.xfade).padStart(3, "0")} ${tc(it.start)} ${tc(it.start + it.dur)} ${rec}`);
         edl.push(`* FROM CLIP NAME: ${media.get(prev.clip!.asset!.id)!.name}`, `* TO CLIP NAME: ${name}`, "");
       } else {
-        edl.push(`${num()}  AX       V     C        ${tc(it.start)} ${tc(it.start + it.dur)} ${rec}`, `* FROM CLIP NAME: ${name}`, "");
+        edl.push(`${num()}  AX       ${ch} C        ${tc(it.start)} ${tc(it.start + it.dur)} ${rec}`, `* FROM CLIP NAME: ${name}`, "");
       }
     }
     await fs.writeFile(path.join(stage, "timeline.edl"), edl.join("\r\n"));
@@ -242,7 +361,7 @@ ${items.join("\n")}
     const appUrl = (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
     const sh = [
       "#!/bin/sh",
-      `# Downloads the media referenced by timeline.fcpxml / timeline.edl into ./media`,
+      `# Downloads the media referenced by timeline.fcpxml / timeline.xml / timeline.edl into ./media`,
       "set -e",
       `APP_URL="\${APP_URL:-${appUrl}}"`,
       'cd "$(dirname "$0")"',
@@ -256,13 +375,14 @@ ${items.join("\n")}
     const readme = `${project.title} - edit package
 Exported by Krish Studio on ${new Date().toISOString().slice(0, 10)} - ${tc(pos)} at ${fps} fps, ${clipItems.length} video clips, ${audio.length} audio clips.
 
-1. Unzip this package and keep timeline.fcpxml next to the media/ folder.
+1. Unzip this package and keep timeline.fcpxml / timeline.xml next to the media/ folder.
    ${bundle ? "The media/ folder is included." : "Media was too large to bundle: run ./download_media.sh (set APP_URL if the studio is not at the default address) to fill media/."}
 2. DaVinci Resolve: File > Import > Timeline... and pick timeline.fcpxml (video, voice/music/sfx lanes, dissolves, scene markers).
-   Premiere Pro: File > Import, pick timeline.edl (video track and dissolves; add the media/ audio files by hand),
-   or open timeline.fcpxml in Resolve / Final Cut Pro and send it to Premiere from there.
+   Premiere Pro: File > Import... and pick timeline.xml (FCP7 XML: video track with dissolves, the clips' own sound,
+   voice/music/sfx audio tracks with levels, scene markers). timeline.edl is a simple fallback for any NLE (video, dissolves, clip sound).
 3. If clips show as offline, relink them to the media/ folder (Resolve: right-click > Relink Clips; Premiere: Link Media).
-4. Scene headings are timeline markers; voice / music / sfx sit on audio lanes 1 / 2 / 3. production_log.csv lists the
+4. Scene headings are timeline markers. Sound generated with a video clip is that clip's own linked audio; voice /
+   music / sfx sit on their own audio lanes (FCPXML roles dialogue / music / effects). production_log.csv lists the
    model, provider and prompt for every shot (AI disclosure for festivals and distributors).
 `;
     await fs.writeFile(path.join(stage, "README.txt"), readme);

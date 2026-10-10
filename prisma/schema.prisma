@@ -85,6 +85,8 @@ enum JobType {
   MULTISHOT_VIDEO
   EXTEND_VIDEO
   EXPORT_PACKAGE
+  /// Re-sync a shot's clip to its voiceover
+  LIPSYNC
 }
 
 enum JobStatus {
