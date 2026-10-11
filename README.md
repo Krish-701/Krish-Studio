@@ -194,6 +194,8 @@ Reference images are passed as URLs, so set `APP_URL` to a publicly reachable ad
 
 ## Project layout
 
+For coding agents, **PLAYBOOK.md** is the full guide to the codebase (also summarised in CLAUDE.md / AGENTS.md).
+
 ```
 prisma/schema.prisma          data model (projects, scenes, shots, characters, assets, jobs, timeline, agents)
 src/lib/generation/           MCP providers + router + model catalog
