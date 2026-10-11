@@ -240,6 +240,9 @@ async function run(job: Job, ctx: GenContext): Promise<unknown> {
         const pending = prev && !prev.videoAssetId && (await db.job.count({ where: { shotId: prev.id, type: { in: ["VIDEO", "MULTISHOT_VIDEO", "EXTEND_VIDEO"] }, status: { in: ["QUEUED", "RUNNING"] } } }));
         if (pending) return { __deferred: 15_000, step: `Waiting for shot #${prev!.order + 1}` };
       }
+      // A new frame for this shot is on its way (e.g. redoing placeholder frames): animate that one, not the old one.
+      const framePending = await db.job.count({ where: { shotId: shot.id, type: { in: ["IMAGE", "CONTACT_SHEET"] }, status: { in: ["QUEUED", "RUNNING"] } } });
+      if (framePending) return { __deferred: 10_000, step: "Waiting for the new frame" };
       const req = await buildVideoRequest(job.shotId!, input.mode, { model: input.model });
       const mode = req.plan.mode;
       await ctx.onProgress(3, mode === "frame" ? `Animating from ${req.plan.start?.label ?? "frame"}` : mode === "reference" ? `Reference mode · ${req.references?.length ?? 0} refs` : "Text to video");

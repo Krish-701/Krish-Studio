@@ -10,6 +10,7 @@ import { Empty } from "@/components/ui/misc";
 import { api } from "@/lib/client";
 import { SceneBoard } from "./scene-board";
 import { useModels } from "./use-models";
+import { PreviewBanner } from "./autopilot-view";
 import { cn } from "@/lib/utils";
 import { ShotCard } from "./shot-card";
 import { useStudio } from "./store";
@@ -103,6 +104,7 @@ export function StoryboardView() {
 
   return (
     <div className="space-y-4 p-4 sm:p-6">
+      <PreviewBanner />
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl font-bold">Storyboard</h1>

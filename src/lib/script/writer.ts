@@ -25,6 +25,10 @@ export interface OutlineJson {
   characters?: { name: string; role?: string; age?: string; gender?: string; description: string }[];
   locations?: { name: string; description: string }[];
   props?: { name: string; description: string }[];
+  /** Recurring atmospheres: weather, sky, sea, landscape, time of day. */
+  environments?: { name: string; description: string }[];
+  /** The film's colour & mood board (palette, lighting, texture). */
+  mood?: { name?: string; description: string; palette?: string[] };
 }
 
 interface SceneJson {
@@ -34,6 +38,8 @@ interface SceneJson {
   summary: string;
   beats?: string[];
   characters?: string[];
+  /** Name of a recurring environment from the bible (weather / sky / time of day). */
+  environment?: string;
   targetSec?: number;
 }
 
@@ -114,6 +120,8 @@ async function bible(projectId: string) {
     (look || style.prompt) && `Look: ${look?.name ?? ""} ${style.prompt ?? ""}`.trim(),
     chars.length && `Cast (use these exact names; refer to them by name in every shot they appear in):\n${chars.map((c) => `- ${c.name} (${c.role}${c.age ? `, ${c.age}` : ""}${c.gender ? `, ${c.gender}` : ""}): ${c.description}`).join("\n")}`,
     els.filter((e) => e.kind === "location").length && `Film sets (reuse them; set "location" to one of these names):\n${els.filter((e) => e.kind === "location").map((e) => `- ${e.name}: ${e.description}`).join("\n")}`,
+    els.filter((e) => e.kind === "environment").length && `Environments (weather, sky, sea, time of day; set a scene's "environment" to one of these names):\n${els.filter((e) => e.kind === "environment").map((e) => `- ${e.name}: ${e.description}`).join("\n")}`,
+    els.filter((e) => e.kind === "mood").length && `Colour & mood: ${els.filter((e) => e.kind === "mood").map((e) => `${e.name}: ${e.description}`).join(" / ")}`,
     els.filter((e) => e.kind === "prop").length && `Key props:\n${els.filter((e) => e.kind === "prop").map((e) => `- ${e.name}: ${e.description}`).join("\n")}`,
     project.sequences.length && `Outline:\n${project.sequences.map((s) => `${s.index + 1}. [Act ${s.act}] ${s.title}: ${s.summary}`).join("\n")}`,
     await songNote(projectId),
@@ -148,8 +156,8 @@ export async function writeOutline(projectId: string, onProgress: (pct: number, 
         {
           role: "user",
           content: `${text}\n\nWrite the outline for this ${project.format} of ${Math.round(project.targetRuntimeSec)} seconds: ${st.acts} act(s), ${st.sequences} sequences in total (about ${Math.round(st.seqLen)} seconds each on average; give each sequence the length its story needs in "targetSec", all adding up to ${Math.round(project.targetRuntimeSec)} seconds).
-Also list the main characters (with a precise visual description: age, ethnicity, face, hair, build, signature wardrobe), the recurring film sets (locations) and key props. Keep existing cast and sets.
-JSON: {"title":"","logline":"","acts":[{"act":1,"title":"","summary":"","sequences":[{"title":"","summary":"2-3 sentences: what happens, who, where","targetSec":${Math.round(st.seqLen)}}]}],"characters":[{"name":"","role":"protagonist|antagonist|supporting|extra","age":"","gender":"","description":""}],"locations":[{"name":"","description":""}],"props":[{"name":"","description":""}]}`,
+Also list the main characters (with a precise visual description: age, ethnicity, face, hair, build, signature wardrobe), the recurring film sets (locations), recurring environments (weather, sky, sea, landscape or time-of-day atmospheres the film returns to), key props, and one colour & mood for the whole film (palette as hex colours, lighting, texture). Keep existing cast and sets.
+JSON: {"title":"","logline":"","acts":[{"act":1,"title":"","summary":"","sequences":[{"title":"","summary":"2-3 sentences: what happens, who, where","targetSec":${Math.round(st.seqLen)}}]}],"characters":[{"name":"","role":"protagonist|antagonist|supporting|extra","age":"","gender":"","description":""}],"locations":[{"name":"","description":""}],"environments":[{"name":"","description":""}],"props":[{"name":"","description":""}],"mood":{"name":"Film look","description":"palette, lighting, texture","palette":["#hex"]}}`,
         },
       ],
       { agent: "DIRECTOR", temperature: 0.7 },
@@ -191,6 +199,22 @@ function skeletonOutline(idea: string, acts: number, sequences: number, seqLen: 
   };
 }
 
+/** The film's colour & mood entry, from the writer's suggestion and the style lock (look, palette, lighting, mood). */
+export function moodFromStyle(style: StyleLock, suggested?: OutlineJson["mood"]) {
+  const look = LOOKS.find((l) => l.id === style.look);
+  const palette = style.palette?.length ? style.palette : suggested?.palette ?? [];
+  const parts = [
+    suggested?.description,
+    look && `${look.name} look`,
+    style.prompt,
+    style.mood && `mood: ${style.mood}`,
+    style.tone && `tone: ${style.tone}`,
+    style.lighting && `lighting: ${style.lighting}`,
+    palette.length && `palette ${palette.join(" ")}`,
+  ].filter(Boolean);
+  return { name: (suggested?.name || "Film look").slice(0, 80), description: parts.join("; ") || "Cinematic colour grade, natural light, fine film grain" };
+}
+
 export async function applyOutline(projectId: string, o: OutlineJson) {
   await db.$transaction(
     async (tx) => {
@@ -216,11 +240,17 @@ export async function applyOutline(projectId: string, o: OutlineJson) {
         });
       }
       const els = await tx.element.findMany({ where: { projectId } });
-      for (const [kind, list] of [["location", o.locations ?? []], ["prop", o.props ?? []]] as const) {
+      for (const [kind, list] of [["location", o.locations ?? []], ["environment", o.environments ?? []], ["prop", o.props ?? []]] as const) {
         for (const e of list) {
           if (!e.name || els.some((x) => x.kind === kind && x.name.toLowerCase() === e.name.toLowerCase())) continue;
           await tx.element.create({ data: { projectId, kind, name: e.name.slice(0, 80), description: e.description ?? "", handle: handleOf(e.name) } });
         }
+      }
+      // Colour & mood board entry: from the outline, else from the style lock (no AI needed). One per film unless the filmmaker adds more.
+      if (!els.some((x) => x.kind === "mood")) {
+        const project = await tx.project.findUniqueOrThrow({ where: { id: projectId } });
+        const m = moodFromStyle((project.styleLock as StyleLock) ?? {}, o.mood);
+        await tx.element.create({ data: { projectId, kind: "mood", name: m.name, description: m.description, handle: handleOf(m.name), color: "#f472b6" } });
       }
       await tx.project.update({
         where: { id: projectId },
@@ -255,7 +285,7 @@ export async function writeSequence(sequenceId: string, onProgress: (pct: number
         {
           role: "user",
           content: `${text}\n\n${before}\n\nNow write sequence ${seq.index + 1} (Act ${seq.act}): "${seq.title}" — ${seq.summary}\nTarget length ${Math.round(seq.targetDurationSec)} seconds, about ${nScenes} scene(s). Give each scene the screen time its story needs in "targetSec" (they should add up to ${Math.round(seq.targetDurationSec)}).
-JSON: {"scenes":[{"heading":"INT. PLACE - DAY","location":"name of a film set from the bible, or a new one","timeOfDay":"DAY|NIGHT|DAWN|DUSK","summary":"","beats":["what happens, in order"],"characters":["names"],"targetSec":0}]}`,
+JSON: {"scenes":[{"heading":"INT. PLACE - DAY","location":"name of a film set from the bible, or a new one","timeOfDay":"DAY|NIGHT|DAWN|DUSK","summary":"","beats":["what happens, in order"],"characters":["names"],"environment":"name of an environment from the bible, or empty","targetSec":0}]}`,
         },
       ],
       { agent: "DIRECTOR", temperature: 0.7 },
@@ -279,6 +309,7 @@ JSON: {"scenes":[{"heading":"INT. PLACE - DAY","location":"name of a film set fr
   const byName = new Map(chars.map((c) => [c.name.toLowerCase(), c]));
   const sets = els.filter((e) => e.kind === "location");
   const props = els.filter((e) => e.kind === "prop");
+  const envs = els.filter((e) => e.kind === "environment");
   let lastShots = "";
   for (const [si, sc] of scenes.entries()) {
     await onProgress(15 + Math.round((si / scenes.length) * 80), `Boarding scene ${si + 1}/${scenes.length}: ${sc.heading}`);
@@ -337,6 +368,8 @@ JSON: {"shots":[{"title":"","description":"","prompt":"","motionPrompt":"","shot
       }));
     }
     const lengths = fitDurations(shots.map((sh) => Number(sh.durationSec)), sceneSec);
+    // The scene's environment (weather / sky / time of day) travels with every shot of the scene.
+    const env = envs.find((e) => e.name.toLowerCase() === String(sc.environment ?? "").toLowerCase());
     let order = 0;
     for (const [k, sh] of shots.entries()) {
       const linked = (sh.characters ?? []).map((n) => byName.get(String(n).toLowerCase())).filter(Boolean);
@@ -348,7 +381,7 @@ JSON: {"shots":[{"title":"","description":"","prompt":"","motionPrompt":"","shot
           shotType: sh.shotType, cameraMove: sh.cameraMove, durationSec: lengths[k],
           dialogue: sh.dialogue || null, speaker: sh.speaker || null, continuity: sh.continuous ? "continuous" : "cut",
           characters: { create: linked.map((c) => ({ characterId: c!.id })) },
-          elements: { create: propIds.map((elementId) => ({ elementId })) },
+          elements: { create: [...propIds, ...(env ? [env.id] : [])].map((elementId) => ({ elementId })) },
         },
       });
     }

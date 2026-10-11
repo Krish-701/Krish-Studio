@@ -9,6 +9,7 @@ import { api } from "@/lib/client";
 import { cn } from "@/lib/utils";
 import { useStudio } from "./store";
 import { useModels } from "./use-models";
+import { ConnectionCheck } from "@/components/connection-check";
 
 /** Mirrors src/lib/script/score.ts and src/worker/autopilot.ts (kept client-safe). */
 const BLOCK = 6;
@@ -221,6 +222,8 @@ export function AutopilotView() {
         <h1 className="flex items-center gap-2 font-display text-2xl font-bold"><Sparkles className="size-6 text-accent" /> Autopilot</h1>
         <p className="mt-1 text-sm text-muted">You set the runtime and the story. The agents score it, improve it, then make the whole film. Talk to the Director at any time; it learns from what you say on this project.</p>
       </div>
+      <ConnectionCheck compact />
+      <PreviewBanner />
       <StoryGate />
       <div className="grid gap-4 sm:grid-cols-2">
         <BriefBox className="rounded-2xl border border-line bg-panel p-4" />
@@ -232,6 +235,43 @@ export function AutopilotView() {
           <p className="text-dim">Ask the Director to switch models for a scene or the whole film; it can pick any image or video model in the catalog.</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Placeholder frames/clips made before Magnific was connected: one button redoes them for real. */
+export function PreviewBanner() {
+  const { projectId, state } = useStudio();
+  const [n, setN] = React.useState<{ frames: number; clips: number } | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const assets = state?.assets.length;
+  React.useEffect(() => {
+    api<{ frames: number; clips: number }>(`/api/projects/${projectId}/redo-previews`).then(setN).catch(() => {});
+  }, [projectId, assets]);
+  if (!n || (!n.frames && !n.clips)) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-warn/30 bg-warn/5 p-4 text-sm">
+      <span className="mr-auto text-warn">
+        {n.frames} frame{n.frames === 1 ? "" : "s"}{n.clips ? ` and ${n.clips} clip${n.clips === 1 ? "" : "s"}` : ""} are placeholders from the offline preview renderer (solid colours), made before Magnific was connected.
+      </span>
+      <Button
+        size="sm"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            const r = await api<{ frames: number; clips: number }>(`/api/projects/${projectId}/redo-previews`, { body: {} });
+            toast.success(`Redoing ${r.frames} frame(s) and ${r.clips} clip(s) with Magnific`);
+            setN({ frames: 0, clips: 0 });
+          } catch (e) {
+            toast.error((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? <Loader2 className="animate-spin" /> : <Wand2 />} Redo with Magnific
+      </Button>
     </div>
   );
 }

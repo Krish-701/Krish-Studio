@@ -130,7 +130,7 @@ export function magnificProvider(cfg: McpServerConfig): MagnificProvider {
       return String(id);
     },
     supports: (cap) => cfg.capabilities.includes(cap),
-    unavailable: () => (!cfg.url ? "No URL configured" : !cfg.token ? "No access token (add it in Settings)" : null),
+    unavailable: () => (!cfg.url ? "No URL configured" : !cfg.token && !cfg.oauthConnected ? "Not connected: open Settings and press Connect Magnific" : null),
 
     async image(req, ctx) {
       await ctx.onProgress(5, "Uploading character, set & style references");

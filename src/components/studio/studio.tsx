@@ -1,7 +1,7 @@
 "use client";
 import * as React from "react";
 import Link from "next/link";
-import { Activity, Rocket, Play, Download, FileText, Film, LayoutGrid, MessageSquare, Palette, Settings, Users, Wifi, WifiOff, X } from "lucide-react";
+import { Activity, Library, Rocket, Play, Download, FileText, Film, LayoutGrid, MessageSquare, Palette, Settings, Wifi, WifiOff, X } from "lucide-react";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/misc";
@@ -11,7 +11,7 @@ import { StudioProvider, useStudio, type View } from "./store";
 import { Pipeline } from "./pipeline";
 import { RightPanel } from "./right-panel";
 import { ScriptView } from "./script-view";
-import { CharactersView } from "./characters-view";
+import { AssetsView } from "./assets-view";
 import { StyleView } from "./style-view";
 import { StoryboardView } from "./storyboard-view";
 import { TimelineView } from "./timeline-view";
@@ -24,7 +24,7 @@ import { FilmWizard, runtimeLabel } from "./film-wizard";
 const NAV: { view: View; label: string; icon: React.ElementType }[] = [
   { view: "autopilot", label: "Autopilot", icon: Rocket },
   { view: "script", label: "Script", icon: FileText },
-  { view: "characters", label: "Cast & sets", icon: Users },
+  { view: "assets", label: "Assets", icon: Library },
   { view: "style", label: "Style & refs", icon: Palette },
   { view: "storyboard", label: "Storyboard", icon: LayoutGrid },
   { view: "timeline", label: "Timeline", icon: Film },
@@ -116,7 +116,7 @@ function Shell() {
             <>
               {view === "autopilot" && <AutopilotView />}
               {view === "script" && <ScriptView />}
-              {view === "characters" && <CharactersView />}
+              {(view === "assets" || view === "characters") && <AssetsView />}
               {view === "style" && <StyleView />}
               {view === "storyboard" && <StoryboardView />}
               {view === "timeline" && <TimelineView />}

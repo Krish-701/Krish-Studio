@@ -8,9 +8,11 @@ import { ffmpeg, tmpDir } from "@/lib/ffmpeg";
 import { generate, providersFor } from "@/lib/generation/router";
 import type { GenContext, ImageRequest } from "@/lib/generation/types";
 import type { MagnificProvider } from "@/lib/generation/magnific";
-import { buildContactSheetRequest, buildMultishotRequest, characterRefList, effectiveStyle, styleText } from "@/lib/prompt-builder";
+import { buildContactSheetRequest, buildMultishotRequest, characterRefList, effectiveStyle, imageVariantFor, styleText } from "@/lib/prompt-builder";
+import { libraryCheck } from "@/lib/agents/checks";
 import { gridFor, splitGrid, toRef } from "@/lib/media";
 import { DEFAULT_IMAGE_MODEL } from "@/lib/generation/catalog";
+import { normalizeKind } from "@/lib/library";
 import { localPath, newKey, putFile } from "@/lib/storage";
 import { upsertShotVideoClip } from "@/lib/timeline";
 import { writeOutline, writeSequence } from "@/lib/script/writer";
@@ -153,13 +155,18 @@ const TURNAROUND = ["front", "three_quarter", "side", "back"] as const;
  *  - wardrobe look: the character in a named costume (or at another age)
  *  - set plate: a 2×2 of the location (wide, reverse, detail, alternate angle) cut into four references
  *  - prop: the object on a neutral background
+ *  - environment: a 2×2 of a recurring atmosphere (wide, detail, two other lights) cut into four references
+ *  - mood: one colour & mood board (palette swatches, lighting, textures, no people) used as the film's style reference
+ * After each sheet the vision model checks it matches its description (libraryCheck).
  * The user's own photos are kept as the strongest references and passed into the sheet.
  */
 async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext) { // eslint-disable-line @typescript-eslint/no-explicit-any
   const project = await db.project.findUniqueOrThrow({ where: { id: job.projectId } });
   const style = effectiveStyle(project, { styleOverride: null } as never);
   const look = styleText(style);
-  const sheetModel = input.model || (project.defaults as Record<string, string> | null)?.image || DEFAULT_IMAGE_MODEL;
+  const defaults = project.defaults as Record<string, string> | null;
+  const sheetModel = input.model || defaults?.image || DEFAULT_IMAGE_MODEL;
+  const variant = imageVariantFor(defaults, sheetModel);
 
   if (input.characterId) {
     const c = await db.character.findUniqueOrThrow({ where: { id: input.characterId }, include: { references: true } });
@@ -170,6 +177,7 @@ async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext
           prompt: `Full-body character reference of ${c.name}: ${c.description}. Wearing their "${input.look}" look: ${input.lookDescription ?? input.look}. Same face, hair and build as the references. Plain neutral studio background, even light. ${look}`,
           aspectRatio: "3:4",
           model: sheetModel,
+          variant,
           references: own.map((r) => ({ ...r, type: "character" })),
           label: `${c.name} · ${input.look}`,
         }
@@ -177,6 +185,7 @@ async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext
           prompt: `Character design sheet (turnaround) of ${c.name}: ${c.description}. Four full-body views side by side of the same person — front, three-quarter, side profile, back — identical face, hair, build and wardrobe in every view, neutral light grey studio background, even soft light, no text. ${look}`,
           aspectRatio: "21:9",
           model: sheetModel,
+          variant,
           references: own.map((r) => ({ ...r, type: "character" })),
           label: `${c.name} · design sheet`,
           grid: { cols: 4, rows: 1, labels: TURNAROUND.map((a) => `${c.name} — ${a.replace("_", "-")} view`) },
@@ -189,6 +198,7 @@ async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext
         data: { projectId: job.projectId, characterId: c.id, kind: "IMAGE", role: "WARDROBE_REF", name: input.look, storageKey: stored.key, url: stored.url, mimeType: stored.mime, providerRef: res.providerRef, meta: { look: input.look, description: input.lookDescription ?? "", preview: !!res.meta?.preview } },
       });
       publish(job.projectId, { type: "refresh", scope: "characters" });
+      await libraryCheck(job.projectId, { name: `${c.name} (${input.look})`, kind: "wardrobe", description: `${c.description}. Look: ${input.lookDescription ?? input.look}`, assetId: a.id });
       return { assetId: a.id };
     }
     const sheet = await db.asset.create({
@@ -206,45 +216,66 @@ async function designSheet(job: Job, input: Record<string, any>, ctx: GenContext
     await db.character.update({ where: { id: c.id }, data: { sheetAssetId: sheet.id } });
     await registerLibrary(job, ctx, "character", c.id, !!res.meta?.preview);
     publish(job.projectId, { type: "refresh", scope: "characters" });
+    await libraryCheck(job.projectId, { name: c.name, kind: "character", description: c.description, assetId: sheet.id });
     return { assetId: sheet.id, angles: tiles.length };
   }
 
   const el = await db.element.findUniqueOrThrow({ where: { id: input.elementId }, include: { references: true } });
   const own = el.references.filter((a) => a.kind === "IMAGE" && !(a.meta as Record<string, unknown>)?.fromSheet).slice(0, 4).map((a) => toRef(a, el.name));
-  const isSet = el.kind === "location";
-  const views = ["establishing wide", "reverse angle", "detail of the space", "alternate angle"];
-  const req: ImageRequest = isSet
-    ? {
-        prompt: `Location reference plates for the film set "${el.name}": ${el.description}. A 2×2 grid of four views of the same place — ${views.join(", ")} — identical architecture, props and lighting, no people, no text, thin black gutters. ${look}`,
-        aspectRatio: project.aspectRatio === "9:16" ? "9:16" : "16:9",
-        model: sheetModel,
-        references: own,
-        label: `${el.name} · set`,
-        grid: { cols: 2, rows: 2, labels: views.map((v) => `${el.name} — ${v}`) },
-      }
-    : {
-        prompt: `Product reference of the prop "${el.name}": ${el.description}. Centred on a plain neutral background, even studio light, no text. ${look}`,
-        aspectRatio: "1:1",
-        model: sheetModel,
-        references: own,
-        label: `${el.name} · prop`,
-      };
+  const kind = normalizeKind(el.kind);
+  const landscape = project.aspectRatio === "9:16" ? "9:16" : "16:9";
+  const PLATES: Record<string, string[]> = {
+    location: ["establishing wide", "reverse angle", "detail of the space", "alternate angle"],
+    environment: ["wide vista", "close detail", "the same place in different light", "the same place at another moment of the weather"],
+  };
+  const views = PLATES[kind] ?? [];
+  const palette = style.palette?.length ? ` Palette: ${style.palette.join(", ")}.` : "";
+  const req: ImageRequest =
+    kind === "location"
+      ? {
+          prompt: `Location reference plates for the film set "${el.name}": ${el.description}. A 2×2 grid of four views of the same place — ${views.join(", ")} — identical architecture, props and lighting, no people, no text, thin black gutters. ${look}`,
+          aspectRatio: landscape, model: sheetModel, variant, references: own, label: `${el.name} · set`,
+          grid: { cols: 2, rows: 2, labels: views.map((v) => `${el.name} — ${v}`) },
+        }
+      : kind === "environment"
+        ? {
+            prompt: `Environment reference plates for "${el.name}": ${el.description}. A 2×2 grid of four views of this recurring atmosphere (weather, sky, water, landscape, time of day) — ${views.join(", ")} — the same environment in every tile, consistent geography and colour, no people, no text, thin black gutters. ${look}`,
+            aspectRatio: landscape, model: sheetModel, variant, references: own, label: `${el.name} · environment`,
+            grid: { cols: 2, rows: 2, labels: views.map((v) => `${el.name} — ${v}`) },
+          }
+        : kind === "mood"
+          ? {
+              prompt: `Colour and mood board for the film "${project.title}" (${el.name}): ${el.description}.${palette} One clean board: a row of large flat colour swatches of the palette, lighting samples (key light direction, contrast, colour temperature), texture and material samples (film grain, surfaces, fabrics), and small atmosphere crops. No people, no faces, no text or labels. ${look}`,
+              aspectRatio: landscape, model: sheetModel, variant, references: own, label: `${el.name} · colour & mood`,
+            }
+          : {
+              prompt: `Product reference of the prop "${el.name}": ${el.description}. Centred on a plain neutral background, even studio light, no text. ${look}`,
+              aspectRatio: "1:1", model: sheetModel, variant, references: own, label: `${el.name} · prop`,
+            };
   const res = await generate("image", ctx, (p) => p.image?.(req, ctx), job.provider);
   const stored = await persist(job.projectId, "elements", res);
-  await db.asset.deleteMany({ where: { elementId: el.id, meta: { path: ["fromSheet"], equals: true } } });
-  if (isSet) {
-    const sheet = await db.asset.create({ data: { projectId: job.projectId, elementId: el.id, kind: "IMAGE", role: "CONTACT_SHEET", name: `${el.name} plates`, storageKey: stored.key, url: stored.url, mimeType: stored.mime, meta: { fromSheet: true, preview: !!res.meta?.preview } } });
+  const preview = !!res.meta?.preview;
+  // Replace the earlier sheet and everything cut from it; keep the filmmaker's own uploads.
+  await db.asset.deleteMany({ where: { id: { in: el.references.filter((a) => (a.meta as Record<string, unknown> | null)?.fromSheet).map((a) => a.id) } } });
+  let sheetId: string;
+  if (req.grid) {
+    const sheet = await db.asset.create({ data: { projectId: job.projectId, elementId: el.id, kind: "IMAGE", role: "CONTACT_SHEET", name: `${el.name} plates`, storageKey: stored.key, url: stored.url, mimeType: stored.mime, meta: { fromSheet: true, preview } } });
+    sheetId = sheet.id;
     const tiles = await splitGrid(stored.key, 2, 2);
     for (const [i, buf] of tiles.entries()) {
       const t = await putFile(newKey(job.projectId, "elements", "image/png"), buf, "image/png");
-      await db.asset.create({ data: { projectId: job.projectId, elementId: el.id, kind: "IMAGE", role: "ELEMENT_REF", name: views[i], storageKey: t.key, url: t.url, mimeType: "image/png", meta: { fromSheet: sheet.id } } });
+      await db.asset.create({ data: { projectId: job.projectId, elementId: el.id, kind: "IMAGE", role: "ELEMENT_REF", name: views[i], storageKey: t.key, url: t.url, mimeType: "image/png", meta: { fromSheet: sheet.id, preview } } });
     }
   } else {
-    await db.asset.create({ data: { projectId: job.projectId, elementId: el.id, kind: "IMAGE", role: "ELEMENT_REF", name: el.name, storageKey: stored.key, url: stored.url, mimeType: stored.mime, providerRef: res.providerRef, meta: { fromSheet: true, preview: !!res.meta?.preview } } });
+    const a = await db.asset.create({
+      data: { projectId: job.projectId, elementId: el.id, kind: "IMAGE", role: kind === "mood" ? "MOODBOARD" : "ELEMENT_REF", name: kind === "mood" ? `${el.name} board` : el.name, storageKey: stored.key, url: stored.url, mimeType: stored.mime, providerRef: res.providerRef, meta: { fromSheet: true, preview } },
+    });
+    sheetId = a.id;
   }
-  await registerLibrary(job, ctx, isSet ? "locations" : "product", el.id, !!res.meta?.preview);
+  if (kind === "location" || kind === "prop") await registerLibrary(job, ctx, kind === "location" ? "locations" : "product", el.id, preview);
   publish(job.projectId, { type: "refresh", scope: "characters" });
-  return { ok: true };
+  await libraryCheck(job.projectId, { name: el.name, kind, description: el.description, assetId: sheetId });
+  return { ok: true, assetId: sheetId, kind };
 }
 
 /**

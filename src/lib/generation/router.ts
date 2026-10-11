@@ -14,7 +14,11 @@ function build(cfg: McpServerConfig): GenerationProvider {
 
 export async function providersFor(cap: Capability, preferId?: string | null) {
   const { mcpServers } = await getSettings();
-  const list = mcpServers.filter((s) => s.enabled && s.capabilities.includes(cap)).map(build).filter((p) => p.supports(cap));
+  let list = mcpServers.filter((s) => s.enabled && s.capabilities.includes(cap)).map(build).filter((p) => p.supports(cap));
+  // The offline preview renderer only draws placeholders (solid colours, Ken Burns). It is used only when it's the
+  // only backend turned on (offline mode), never as a silent stand-in for Magnific; set PREVIEW_FALLBACK=1 to allow that.
+  const real = list.filter((p) => p !== mockProvider);
+  if (real.length && process.env.PREVIEW_FALLBACK !== "1") list = real;
   if (preferId) list.sort((a, b) => (a.id === preferId ? -1 : b.id === preferId ? 1 : 0));
   return list;
 }

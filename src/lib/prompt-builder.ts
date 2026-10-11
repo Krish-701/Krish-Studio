@@ -105,8 +105,17 @@ export async function shotCharacters(shot: Shot & { characters: { characterId: s
   );
 }
 
-/** The scene's film set plus props linked to the shot or named in it. */
-export async function shotElements(shot: FullShot): Promise<{ location: ElementWithRefs | null; props: ElementWithRefs[] }> {
+/** Default variant for an image model: the project's chosen variant when it is the project's default model. */
+export function imageVariantFor(defaults: Record<string, string> | null | undefined, slug: string) {
+  const d = defaults ?? {};
+  return slug === (d.image || DEFAULT_IMAGE_MODEL) ? d.imageVariant || (slug === DEFAULT_IMAGE_MODEL ? DEFAULT_IMAGE_VARIANT : undefined) : undefined;
+}
+
+/**
+ * Asset library for a shot: the scene's film set, the environments (weather, sky, sea, time of day) linked to the shot
+ * or named in the shot / scene, props linked or named, and the film's colour & mood board.
+ */
+export async function shotElements(shot: FullShot): Promise<{ location: ElementWithRefs | null; props: ElementWithRefs[]; environments: ElementWithRefs[]; mood: ElementWithRefs | null }> {
   const all = await db.element.findMany({ where: { projectId: shot.projectId }, include: { references: { where: { kind: "IMAGE" } } } });
   const text = `${shot.prompt} ${shot.description}`.toLowerCase();
   const linked = new Set(shot.elements.map((e) => e.elementId));
@@ -117,7 +126,14 @@ export async function shotElements(shot: FullShot): Promise<{ location: ElementW
     all.find((e) => e.kind === "location" && named(e)) ??
     null;
   const props = all.filter((e) => e.kind === "prop" && (linked.has(e.id) || named(e)));
-  return { location, props };
+  // Environments recur across scenes: also match them against the scene heading, summary and time of day.
+  const sceneText = `${text} ${shot.scene?.heading ?? ""} ${shot.scene?.summary ?? ""} ${shot.scene?.timeOfDay ?? ""}`.toLowerCase();
+  const inScene = (e: Element) => e.locked && (new RegExp(`\\b${esc(e.name.toLowerCase())}\\b`).test(sceneText) || (e.handle && sceneText.includes(`@${e.handle.toLowerCase()}`)));
+  const environments = all.filter((e) => e.kind === "environment" && (linked.has(e.id) || inScene(e))).slice(0, 2);
+  // One mood board per film, or one per act / sequence: a linked or named one wins, else the film's first.
+  const moods = all.filter((e) => e.kind === "mood" && e.locked).sort((a, b) => +a.createdAt - +b.createdAt);
+  const mood = moods.find((e) => linked.has(e.id)) ?? moods.find((e) => inScene(e)) ?? moods[0] ?? null;
+  return { location, props, environments, mood };
 }
 
 async function loadShot(shotId: string): Promise<FullShot> {
@@ -127,7 +143,7 @@ async function loadShot(shotId: string): Promise<FullShot> {
 /** Everything a shot could reference, as planner candidates. */
 async function candidatesFor(shot: FullShot, kind: "image" | "video") {
   const chars = await shotCharacters(shot);
-  const { location, props } = await shotElements(shot);
+  const { location, props, environments, mood } = await shotElements(shot);
   const style = effectiveStyle(shot.project, shot);
   const looks = new Map(shot.characters.map((c) => [c.characterId, c.look]));
   const cands: Candidate[] = [];
@@ -150,7 +166,11 @@ async function candidatesFor(shot: FullShot, kind: "image" | "video") {
     for (const r of refs) cands.push({ role: /turnaround/.test(r.label ?? "") ? "sheet" : "character", ref: r, owner: c.id });
   }
   if (location?.locked !== false) for (const a of location?.references.slice(0, 3) ?? []) cands.push({ role: "location", ref: toRef(a, `${location!.name} (film set)`, { libraryId: location!.providerRef }), owner: location!.id });
+  for (const e of environments) for (const a of e.references.slice(0, 2)) cands.push({ role: "environment", ref: toRef(a, `${e.name} (environment)`), owner: e.id });
   for (const p of props) for (const a of p.references.slice(0, 2)) cands.push({ role: "prop", ref: toRef(a, `${p.name} (prop)`, { libraryId: p.providerRef }), owner: p.id });
+  // The mood board itself (MOODBOARD) first, then any image the filmmaker uploaded to it.
+  const board = mood ? [...mood.references].sort((a, b) => Number(b.role === "MOODBOARD") - Number(a.role === "MOODBOARD"))[0] : null;
+  if (board) cands.push({ role: "mood", ref: toRef(board, `${mood!.name} (colour & mood board)`), owner: mood!.id });
 
   if (style.enabled && style.referenceAssetIds?.length) {
     const assets = await db.asset.findMany({ where: { id: { in: style.referenceAssetIds } } });
@@ -168,7 +188,15 @@ async function candidatesFor(shot: FullShot, kind: "image" | "video") {
     const audio = await db.asset.findFirst({ where: { projectId: shot.projectId, role: "AUDIO_REF", OR: [{ shotId: shot.id }, { shotId: null }] }, orderBy: { createdAt: "desc" } });
     if (audio) cands.push({ role: "audio", ref: toRef(audio, "Audio reference (rhythm and mood)") });
   }
-  return { cands, chars, location, props, style };
+  return { cands, chars, location, props, environments, mood, style };
+}
+
+/** Prompt lines for the library assets that aren't people: environments and the colour & mood board. */
+function libraryText(environments: ElementWithRefs[], mood: ElementWithRefs | null): string[] {
+  const out: string[] = [];
+  if (environments.length) out.push(`Environment: ${environments.map((e) => `${e.name}${e.description ? ` (${e.description})` : ""}`).join("; ")}`);
+  if (mood?.description) out.push(`Colour & mood: ${mood.description}`);
+  return out;
 }
 
 function castText(chars: CharWithRefs[], looks: Map<string, string | null>) {
@@ -191,8 +219,8 @@ export async function buildImageRequest(shotId: string, opts: { model?: string |
   const defaults = (shot.project.defaults as Record<string, string> | null) ?? {};
   const slug = opts.model || shot.imageModel || defaults.image || DEFAULT_IMAGE_MODEL;
   const model = imageModel(slug);
-  const variant = slug === (defaults.image || DEFAULT_IMAGE_MODEL) ? defaults.imageVariant || (slug === DEFAULT_IMAGE_MODEL ? DEFAULT_IMAGE_VARIANT : undefined) : undefined;
-  const { cands, chars, location, props, style } = await candidatesFor(shot, "image");
+  const variant = imageVariantFor(defaults, slug);
+  const { cands, chars, location, props, environments, mood, style } = await candidatesFor(shot, "image");
   const plan = planReferences(model, { kind: "image", candidates: cands });
   const looks = new Map(shot.characters.map((c) => [c.characterId, c.look]));
 
@@ -204,6 +232,7 @@ export async function buildImageRequest(shotId: string, opts: { model?: string |
     framing,
     cast && `Characters in frame — ${cast}`,
     props.length && `Props: ${props.map((p) => `${p.name} (${p.description || "as in reference"})`).join(", ")}`,
+    ...libraryText(environments, mood),
     styleText(style, shot.colorPreset),
     ...plan.promptNotes,
     "Cinematic film still, consistent with the rest of the film",
@@ -225,7 +254,7 @@ export async function buildImageRequest(shotId: string, opts: { model?: string |
   };
 }
 
-function videoText(shot: FullShot, chars: CharWithRefs[], style: StyleLock, plan: RefPlan, looks: Map<string, string | null>) {
+function videoText(shot: FullShot, chars: CharWithRefs[], style: StyleLock, plan: RefPlan, looks: Map<string, string | null>, lib: string[] = []) {
   const action = shot.motionPrompt?.trim() ? `${shot.description || shot.prompt} ${shot.motionPrompt}` : shot.description || shot.prompt;
   const dialogue = shot.dialogue ? ` ${shot.speaker ?? "The character"} says: "${shot.dialogue}"` : "";
   const motion = shot.cameraMove && shot.cameraMove !== "static" ? `Camera: ${shot.cameraMove}` : "Camera: locked off";
@@ -235,6 +264,7 @@ function videoText(shot: FullShot, chars: CharWithRefs[], style: StyleLock, plan
     motion,
     cast && `Cast — ${cast}`,
     chars.length && plan.mode !== "text" && `Keep ${chars.map((c) => c.name).join(", ")} identical to their references throughout`,
+    ...lib,
     styleText(style, shot.colorPreset),
     ...plan.promptNotes,
   ]);
@@ -251,12 +281,12 @@ export function resolveVideoModel(shot: Shot & { project: Project }, override?: 
 export async function buildVideoRequest(shotId: string, mode?: string, opts: { model?: string | null } = {}): Promise<VideoRequest & { plan: RefPlan }> {
   const shot = await loadShot(shotId);
   const model = resolveVideoModel(shot, opts.model);
-  const { cands, chars, style } = await candidatesFor(shot, "video");
+  const { cands, chars, style, environments, mood } = await candidatesFor(shot, "video");
   const want = mode === "i2v" ? "frame" : mode === "t2v" ? "reference" : mode || shot.refMode || "auto";
   const plan = planReferences(model, { kind: "video", mode: want, continuous: shot.continuity === "continuous", candidates: cands });
   const looks = new Map(shot.characters.map((c) => [c.characterId, c.look]));
   return {
-    prompt: videoText(shot, chars, style, plan, looks),
+    prompt: videoText(shot, chars, style, plan, looks, libraryText(environments, mood)),
     aspectRatio: shot.project.aspectRatio,
     model: model.slug === "auto" ? null : model.slug,
     durationSec: shot.durationSec,
@@ -345,16 +375,21 @@ export function gridAspect(aspect: string, cols: number, rows: number) {
 export async function buildContactSheetRequest(shotIds: string[], cols: number, rows: number, opts: { model?: string | null } = {}): Promise<{ req: ImageRequest; plan: RefPlan }> {
   const shots = (await Promise.all(shotIds.map(loadShot))).sort((a, b) => a.order - b.order);
   const first = shots[0];
-  const model = imageModel(opts.model || first.imageModel || (first.project.defaults as Record<string, string>)?.image || "auto");
+  const defaults = (first.project.defaults as Record<string, string> | null) ?? {};
+  const model = imageModel(opts.model || first.imageModel || defaults.image || DEFAULT_IMAGE_MODEL);
   const seen = new Set<string>();
   const cands: Candidate[] = [];
   const allChars: CharWithRefs[] = [];
   let style: StyleLock = {};
   let setText = "";
+  const envs: ElementWithRefs[] = [];
+  let mood: ElementWithRefs | null = null;
   for (const s of shots) {
     const r = await candidatesFor(s, "image");
     style = r.style;
     if (r.location && !setText) setText = `Set: ${r.location.name} — ${r.location.description}`;
+    for (const e of r.environments) if (!envs.some((x) => x.id === e.id)) envs.push(e);
+    mood ??= r.mood;
     for (const c of r.chars) if (!allChars.some((x) => x.id === c.id)) allChars.push(c);
     for (const c of r.cands) {
       const k = `${c.role}:${c.ref.assetId}`;
@@ -376,6 +411,7 @@ export async function buildContactSheetRequest(shotIds: string[], cols: number, 
     castText(allChars, looks) && `Cast — ${castText(allChars, looks)}`,
     ...labels.map((l, i) => `Frame ${i + 1} (row ${Math.floor(i / cols) + 1}, column ${(i % cols) + 1}): ${l}`),
     n > labels.length && `Frames ${labels.length + 1}–${n}: extra coverage of the scene`,
+    ...libraryText(envs, mood),
     styleText(style, first.colorPreset),
     ...plan.promptNotes,
   ]);
@@ -384,6 +420,7 @@ export async function buildContactSheetRequest(shotIds: string[], cols: number, 
       prompt,
       aspectRatio: gridAspect(first.project.aspectRatio, cols, rows),
       model: model.slug,
+      variant: imageVariantFor(defaults, model.slug),
       references: plan.refs,
       label: `${first.scene?.heading ?? "SCENE"} · contact sheet`,
       grid: { cols, rows, labels },

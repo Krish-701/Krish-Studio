@@ -20,6 +20,8 @@ export interface McpServerConfig {
   token?: string | null;
   /** Header used for the token. Default "Authorization" with "Bearer " prefix. */
   authHeader?: string;
+  /** Signed in with OAuth (Settings → Connect). Computed when settings load; never stored. */
+  oauthConnected?: boolean;
   enabled: boolean;
   capabilities: Capability[];
   /** For kind "mcp": { image: { tool: "generate_image", args: "{\"prompt\":\"{{prompt}}\"}" }, ... } */
@@ -98,9 +100,11 @@ export async function getSettings(): Promise<Settings> {
   }
   // Models synced from the provider extend the built-in catalog everywhere (UI, planner, worker).
   setLiveCatalog((row.modelCatalog as unknown as { image?: ModelInfo[]; video?: ModelInfo[] }) ?? null);
+  const signedIn = (row.mcpAuth as Record<string, { tokens?: string }> | null) ?? {};
   const servers = ((row.mcpServers as unknown as McpServerConfig[]) || []).map((s) => ({
     ...s,
     token: decryptSecret(s.token),
+    oauthConnected: !!signedIn[s.id]?.tokens,
   }));
   return {
     llmBaseUrl: row.llmBaseUrl,
@@ -112,7 +116,7 @@ export async function getSettings(): Promise<Settings> {
     llmReasoning: row.llmReasoning,
     visionModel: row.visionModel,
     llmCaps: (row.llmCaps as unknown as LlmCaps) ?? null,
-    mcpServers: servers.length ? servers : defaultServers(),
+    mcpServers: servers.length ? servers : defaultServers().map((s) => ({ ...s, oauthConnected: !!signedIn[s.id]?.tokens })),
   };
 }
 
@@ -146,7 +150,9 @@ export async function saveSettings(input: Partial<Settings>) {
       // Keep the stored token when the browser sends back the masked value.
       const prev = current.mcpServers.find((p) => p.id === s.id);
       const token = s.token && MASK_RE.test(s.token) ? prev?.token : s.token;
-      return { ...s, token: encryptSecret(token || null) };
+      const { oauthConnected: _o, ...rest } = s;
+      void _o;
+      return { ...rest, token: encryptSecret(token || null) };
     });
   }
   await db.appSettings.update({ where: { id: "global" }, data });

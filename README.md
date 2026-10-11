@@ -5,32 +5,34 @@ specialist sub-agents (Script Doctor, Character Consistency, Mood & Tone, Genera
 improve it to 8.5/10, then make the whole film on autopilot,
 and every generation goes through MCP tool calls — Magnific MCP first, with any other MCP server as a fallback.
 
-## Run it
+## Run it on your computer
 
-You can run it on your own computer and in the cloud at the same time; each install has its own database and project folders.
-
-**On your computer** (Node 20+, ffmpeg, Docker Desktop):
+Needs Node 20+, ffmpeg and PostgreSQL (Docker Desktop can run Postgres for you).
 
 ```bash
 git clone https://github.com/radhakrishnanp-lgtm/Krish-Studio && cd Krish-Studio
-./scripts/start-local.sh                    # Windows: powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1
+cp .env.example .env                 # put your OpenRouter key in LLM_API_KEY
+docker compose up -d postgres redis  # or use your own Postgres and set DATABASE_URL
+npm install
+npx prisma db push
+npm run dev                          # open http://localhost:3000
 ```
 
-It creates `.env`, starts Postgres and Redis in Docker, sets up the database and opens http://localhost:3000.
-Put your keys in `.env` (or later in **Settings**): `LLM_API_KEY` (OpenRouter) and `MAGNIFIC_MCP_TOKEN` (Freepik / Magnific).
+(`./scripts/start-local.sh`, or `scripts\start-local.ps1` on Windows, does the same steps and opens the browser.)
 
-**In the cloud** (any Linux server with Docker):
+**Before your first film, press "Check connections"** (on the home page, the Autopilot page and in Settings). It checks, one by one:
 
-```bash
-git clone https://github.com/radhakrishnanp-lgtm/Krish-Studio && cd Krish-Studio
-cp .env.example .env && nano .env           # keys, SETTINGS_SECRET, APP_URL=https://your-domain
-./scripts/deploy-cloud.sh                   # docker compose up -d --build: app + Postgres + Redis
-```
+1. the AI model answers (Qwen3.8 Omni Flash on OpenRouter),
+2. the AI can see images (it is used for every consistency, mood and frame check),
+3. Magnific (Freepik) is connected: press **Connect Magnific** and sign in with your account; no token to copy,
+4. Magnific renders one real test image with GPT Image 2.5 (Flare), and the AI describes it back to you.
 
-Run `git pull && ./scripts/deploy-cloud.sh` to update. The database and every project's folder live in Docker volumes and survive updates.
-Put HTTPS in front (Caddy, Nginx or your cloud's load balancer) and set `APP_URL` to that address.
+Frames and clips only come from Magnific. The offline preview renderer (solid-colour placeholders) is used only when every
+other backend is turned off in Settings; it never stands in for Magnific silently. If a project already has placeholder frames,
+the Storyboard and Autopilot pages show **Redo with Magnific**, which regenerates them (and their clips) for real.
 
-Manual setup still works: `cp .env.example .env`, `docker compose up -d postgres redis`, `npm install`, `npx prisma db push`, `npm run dev`.
+Running on a server later: `docker compose up -d --build` runs the app, Postgres and Redis together (see `scripts/deploy-cloud.sh`).
+Set `APP_URL` to the server's address so the Magnific sign-in can return to it.
 
 ### The AI that runs the crew
 

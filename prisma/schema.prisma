@@ -423,6 +423,8 @@ model AppSettings {
   /// Generation backends, tried in priority order.
   /// [{ id, name, kind: "magnific"|"mcp"|"mock", url, token, enabled, capabilities: [...], toolMap }]
   mcpServers   Json     @default("[]")
+  /// OAuth sign-ins to MCP servers (Magnific): { [serverId]: { client, tokens (encrypted), verifier } }
+  mcpAuth      Json?
   updatedAt    DateTime @updatedAt
 }
 
@@ -452,7 +454,7 @@ model Element {
   id          String   @id @default(cuid())
   projectId   String
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  /// location | prop
+  /// location (background / set) | environment | prop | mood (colour & mood board); see src/lib/library.ts
   kind        String   @default("location")
   name        String
   description String   @default("")

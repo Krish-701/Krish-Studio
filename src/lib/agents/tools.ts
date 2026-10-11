@@ -165,8 +165,8 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
     },
   },
   design_sheet: {
-    schema: S("Generate an AI design sheet: a character turnaround (front, three-quarter, side, back) cut into reference angles, a named wardrobe look, or a film set / prop plate.", {
-      character: str("Character name"), set: str("Film set or prop name"), kind: str("turnaround | wardrobe | plate"), look: str("Wardrobe look name"), lookDescription: str("What they wear in this look"),
+    schema: S("Generate an AI design sheet: a character turnaround (front, three-quarter, side, back) cut into reference angles, a named wardrobe look, or plates for a set / environment / prop / colour & mood board.", {
+      character: str("Character name"), set: str("Name of a set, environment, prop or mood board"), kind: str("turnaround | wardrobe | plate"), look: str("Wardrobe look name"), lookDescription: str("What they wear in this look"),
     }),
     impl: async (a, c) => {
       const ch = a.character ? await db.character.findFirst({ where: { projectId: c.projectId, name: { equals: a.character, mode: "insensitive" } } }) : null;
@@ -176,13 +176,19 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
       return { jobId: job.id };
     },
   },
+  build_asset_library: {
+    schema: S("Build the asset library BEFORE drawing frames: design sheets for every character (turnaround), background / set (plates), environment (plates), prop and the colour & mood board. Only fills gaps unless redraw is true.", { redraw: { type: "boolean", description: "Redraw sheets that already exist" } }),
+    impl: (a, c) => svc.buildAssetLibrary(c.projectId, { missingOnly: !a.redraw }),
+  },
   create_set: {
-    schema: S("Add a film set (location) or prop so every shot that uses it gets its reference images.", { name: str(""), kind: str("location | prop"), description: str("Visual description") }, ["name"]),
+    schema: S("Add an asset library item so every shot that uses it gets its reference images: a background / film set (location), a recurring environment (weather, sky, sea, time of day), a prop, or a colour & mood board (mood).", { name: str(""), kind: str("location | environment | prop | mood"), description: str("Visual description") }, ["name"]),
     impl: async (a, c) => {
       const { handleOf } = await import("../script/writer");
+      const { normalizeKind } = await import("../library");
+      const kind = normalizeKind(a.kind);
       const el = await db.element.upsert({
-        where: { projectId_kind_name: { projectId: c.projectId, kind: a.kind === "prop" ? "prop" : "location", name: a.name } },
-        create: { projectId: c.projectId, kind: a.kind === "prop" ? "prop" : "location", name: a.name, description: a.description ?? "", handle: handleOf(a.name) },
+        where: { projectId_kind_name: { projectId: c.projectId, kind, name: a.name } },
+        create: { projectId: c.projectId, kind, name: a.name, description: a.description ?? "", handle: handleOf(a.name) },
         update: { description: a.description ?? undefined },
       });
       publish(c.projectId, { type: "refresh", scope: "characters" });

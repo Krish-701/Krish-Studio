@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { ok, route, type Params } from "@/lib/api";
 import { publish } from "@/lib/events";
+import { normalizeKind } from "@/lib/library";
 
 const FIELDS = ["name", "description", "locked", "color", "handle", "kind"];
 
@@ -8,6 +9,7 @@ export const PATCH = route(async (req: Request, { params }: Params<"id">) => {
   const { id } = await params;
   const b = await req.json();
   const data = Object.fromEntries(Object.entries(b).filter(([k]) => FIELDS.includes(k)));
+  if ("kind" in data) data.kind = normalizeKind(data.kind);
   const el = await db.element.update({ where: { id }, data });
   publish(el.projectId, { type: "refresh", scope: "characters" });
   return ok(el);

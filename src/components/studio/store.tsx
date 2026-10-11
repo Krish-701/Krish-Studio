@@ -15,7 +15,7 @@ export type Clip = ProjectState["clips"][number];
 export type Finding = ProjectState["findings"][number];
 export type Asset = ProjectState["assets"][number];
 
-export type View = "autopilot" | "script" | "characters" | "style" | "storyboard" | "timeline" | "watch" | "export";
+export type View = "autopilot" | "script" | "assets" | "characters" | "style" | "storyboard" | "timeline" | "watch" | "export";
 
 interface AgentLive {
   status: "thinking" | "idle" | "acting";
@@ -66,12 +66,14 @@ export function StudioProvider({ projectId, children }: { projectId: string; chi
     if (!data || didInit.current) return;
     didInit.current = true;
     const fromHash = typeof window !== "undefined" ? (window.location.hash.slice(1) as View) : null;
-    if (fromHash && ["autopilot", "script", "characters", "style", "storyboard", "timeline", "watch", "export"].includes(fromHash)) setViewState(fromHash);
+    if (fromHash && ["autopilot", "script", "assets", "characters", "style", "storyboard", "timeline", "watch", "export"].includes(fromHash)) setViewState(fromHash === "characters" ? "assets" : fromHash);
     else if (!data.shots.length && !data.sequences.length && data.project.setupDone) setViewState("script");
     else if (data.project.stage === "VIDEO" || data.project.stage === "AUDIO") setViewState("timeline");
   }, [data]);
 
-  const setView = React.useCallback((v: View) => {
+  const setView = React.useCallback((next: View) => {
+    // "Cast & sets" now lives in the Asset library.
+    const v: View = next === "characters" ? "assets" : next;
     setViewState(v);
     if (typeof window !== "undefined") history.replaceState(null, "", `#${v}`);
   }, []);

@@ -229,6 +229,8 @@ export async function projectOverview(projectId: string) {
     characters: p.characters.map((c) => ({ id: c.id, name: c.name, handle: c.handle, role: c.role, description: c.description, locked: c.locked, referenceImages: c._count.references, designSheet: !!c.sheetAssetId, voiceId: c.voiceId })),
     sets: p.elements.filter((e) => e.kind === "location").map((e) => ({ id: e.id, name: e.name, description: e.description, referenceImages: e._count.references })),
     props: p.elements.filter((e) => e.kind === "prop").map((e) => ({ id: e.id, name: e.name, description: e.description, referenceImages: e._count.references })),
+    environments: p.elements.filter((e) => e.kind === "environment").map((e) => ({ id: e.id, name: e.name, description: e.description, referenceImages: e._count.references })),
+    moodBoards: p.elements.filter((e) => e.kind === "mood").map((e) => ({ id: e.id, name: e.name, description: e.description, referenceImages: e._count.references })),
   };
 }
 
@@ -249,6 +251,49 @@ export async function writeSequences(projectId: string, sequenceIds?: string[]) 
 
 export async function queueDesignSheet(projectId: string, input: { characterId?: string; elementId?: string; kind?: "turnaround" | "wardrobe" | "plate"; look?: string; lookDescription?: string; model?: string }) {
   return enqueue({ projectId, type: "DESIGN_SHEET", input, maxAttempts: 2 });
+}
+
+/**
+ * Asset library: every reference the film's frames are drawn from, built before the storyboard.
+ * Queues a design sheet for each character (turnaround), background / set (plates), environment (plates),
+ * prop (prop sheet) and the colour & mood board. missingOnly (default) skips assets that already have a sheet
+ * or an uploaded reference, and anything with a sheet already queued. Creates the film's mood entry from the
+ * style lock if there is none.
+ */
+export async function buildAssetLibrary(projectId: string, opts: { missingOnly?: boolean; model?: string } = {}) {
+  const missingOnly = opts.missingOnly !== false;
+  const { handleOf, moodFromStyle } = await import("./script/writer");
+  type Lock = Parameters<typeof moodFromStyle>[0];
+  if (!(await db.element.count({ where: { projectId, kind: "mood" } }))) {
+    const project = await db.project.findUniqueOrThrow({ where: { id: projectId } });
+    const m = moodFromStyle((project.styleLock as Lock) ?? {});
+    await db.element.create({ data: { projectId, kind: "mood", name: m.name, description: m.description, handle: handleOf(m.name), color: "#f472b6" } });
+  }
+  const [chars, els, pending] = await Promise.all([
+    db.character.findMany({ where: { projectId }, include: { references: { select: { id: true, kind: true } } } }),
+    db.element.findMany({ where: { projectId }, orderBy: { createdAt: "asc" }, include: { references: { select: { id: true, kind: true } } } }),
+    db.job.findMany({ where: { projectId, type: "DESIGN_SHEET", status: { in: ["QUEUED", "RUNNING"] } }, select: { input: true } }),
+  ]);
+  const busy = new Set(pending.flatMap((j) => { const i = (j.input ?? {}) as Record<string, string>; return [i.characterId, i.elementId].filter(Boolean); }));
+  const has = (refs: { kind: string }[]) => refs.some((r) => r.kind === "IMAGE");
+  const queued: Record<string, number> = { character: 0, location: 0, environment: 0, prop: 0, mood: 0 };
+  let skipped = 0;
+  for (const c of chars) {
+    if (c.role === "extra" || busy.has(c.id) || (missingOnly && (c.sheetAssetId || has(c.references)))) { skipped++; continue; }
+    await queueDesignSheet(projectId, { characterId: c.id, kind: "turnaround", model: opts.model });
+    queued.character++;
+  }
+  // Long films can have hundreds of sets and props; cap each kind per build (run again for the rest).
+  const CAP: Record<string, number> = { location: 40, environment: 20, prop: 40, mood: 6 };
+  for (const e of els) {
+    const k = e.kind in CAP ? e.kind : "location";
+    if (busy.has(e.id) || (missingOnly && has(e.references)) || queued[k] >= CAP[k]) { skipped++; continue; }
+    await queueDesignSheet(projectId, { elementId: e.id, kind: "plate", model: opts.model });
+    queued[k]++;
+  }
+  const total = Object.values(queued).reduce((a, b) => a + b, 0);
+  publish(projectId, { type: "refresh", scope: "characters" });
+  return { queued, total, skipped };
 }
 
 /** Shot ids for a scope: explicit ids, a scene, a sequence, an act, or the whole film. */

@@ -433,3 +433,16 @@ export async function validateLlm(): Promise<{ caps: LlmCaps; checks: Validation
 async function saveCaps(caps: LlmCaps) {
   await db.appSettings.update({ where: { id: "global" }, data: { llmCaps: caps as never } });
 }
+
+/** Shows the model a picture and returns what it says about it (checks image input end to end). */
+export async function describeImage(imageUrl: string, question = "Describe this image in one short sentence.") {
+  const model = await visionModelFor();
+  if (!model) throw new Error("The AI model can't take images (set a vision model in Settings).");
+  const msg = await chat([{ role: "user", content: [{ type: "text", text: question }, { type: "image_url", image_url: { url: imageUrl } }] }], { model, temperature: 0, reasoning: false });
+  return stripThink(typeof msg.content === "string" ? msg.content : "").trim();
+}
+
+/** The red test square: can the model see images at all? */
+export async function testVision() {
+  return describeImage(RED_PNG, "What colour is this image? Answer with one word.");
+}

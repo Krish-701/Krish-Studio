@@ -1,4 +1,5 @@
 "use client";
+import { ConnectionCheck } from "@/components/connection-check";
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -78,12 +79,13 @@ export function ProjectsHome() {
             {health && (
               <div className="mt-6 flex flex-wrap gap-2 text-xs">
                 <Badge tone={health.llm ? "ok" : "warn"}>{health.llm ? "AI assistant connected" : "AI assistant not configured"}</Badge>
-                <Badge tone={health.magnific ? "ok" : "warn"}>{health.magnific ? "Magnific connected" : "Magnific token missing · preview renderer active"}</Badge>
+                <Badge tone={health.magnific ? "ok" : "warn"}>{health.magnific ? "Magnific connected" : "Magnific not connected · press Connect Magnific below"}</Badge>
                 <Badge>{health.queue === "bullmq" ? "BullMQ queue" : "In-process queue"}</Badge>
               </div>
             )}
           </div>
         </section>
+        <ConnectionCheck className="mb-10" />
 
         <div className="mb-4 flex items-end justify-between">
           <h2 className="font-display text-xl font-semibold">Your films</h2>

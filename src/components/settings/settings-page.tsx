@@ -11,6 +11,7 @@ import { Section, Switch } from "@/components/ui/misc";
 import { Badge } from "@/components/ui/badge";
 import { api, fetcher } from "@/lib/client";
 import { AGENT_LIST } from "@/lib/agents/definitions";
+import { ConnectionCheck, connectMagnific } from "@/components/connection-check";
 import type { Capability, LlmCaps, McpServerConfig } from "@/lib/settings";
 
 const CAPS: Capability[] = ["image", "video", "tts", "music", "sfx", "upscale", "inpaint"];
@@ -139,6 +140,7 @@ export function SettingsPage() {
           <h1 className="font-display text-3xl font-bold">Settings</h1>
           <p className="mt-1 text-muted">Change the AI model and generation backends at any time. Keys are encrypted at rest.</p>
         </div>
+        <ConnectionCheck />
 
         <Section title={<span className="flex items-center gap-2"><Bot className="size-4 text-accent" /> AI assistant · OpenAI-compatible API</span>} actions={<TestResult k="llm" />}>
           <div className="mb-4 flex flex-wrap gap-2">
@@ -246,6 +248,14 @@ export function SettingsPage() {
                     <Switch checked={s.enabled} onCheckedChange={(v) => setServer(i, { enabled: v })} />
                   </div>
                 </div>
+                {s.kind === "magnific" && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-accent/20 bg-accent/5 p-3 text-xs">
+                    {s.oauthConnected ? <CheckCircle2 className="size-4 text-ok" /> : <XCircle className="size-4 text-warn" />}
+                    <span className="mr-auto">{s.oauthConnected ? "Signed in to Magnific. Frames, clips and audio are generated on your account." : s.hasToken ? "Using the access token below." : "Not connected. Sign in with your Magnific / Freepik account; no token needed."}</span>
+                    <Button size="sm" onClick={async () => { if (await connectMagnific(s.id)) location.reload(); }}><Plug /> {s.oauthConnected ? "Reconnect" : "Connect Magnific"}</Button>
+                    {s.oauthConnected && <Button size="sm" variant="ghost" onClick={async () => { await api("/api/mcp/oauth/disconnect", { body: { serverId: s.id } }); location.reload(); }}>Disconnect</Button>}
+                  </div>
+                )}
                 {s.kind !== "mock" ? (
                   <div className="mt-3 grid gap-3 sm:grid-cols-[1.2fr_1fr_0.6fr_auto]">
                     <div className="space-y-1">
@@ -267,7 +277,7 @@ export function SettingsPage() {
                     </div>
                   </div>
                 ) : (
-                  <p className="mt-2 text-xs text-dim">Renders stylised preview frames and Ken-Burns clips locally with ffmpeg, so the whole pipeline works without credits. Turn it off to require real generations.</p>
+                  <p className="mt-2 text-xs text-dim">Draws placeholder frames (solid colours) and Ken-Burns clips locally with ffmpeg, for trying the pipeline without credits. It is only used when every other backend is turned off, never as a stand-in for Magnific.</p>
                 )}
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                   {CAPS.map((c) => {

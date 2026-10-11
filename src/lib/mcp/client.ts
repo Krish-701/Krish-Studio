@@ -1,7 +1,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { McpServerConfig } from "../settings";
+import { DbOAuthProvider } from "./oauth";
 
 /**
  * Thin MCP client pool. All generation goes through `callTool` on a configured MCP server.
@@ -17,21 +19,26 @@ function headers(cfg: McpServerConfig): Record<string, string> {
 }
 
 async function connect(cfg: McpServerConfig): Promise<Client> {
-  const fingerprint = `${cfg.url}|${cfg.token ?? ""}|${cfg.authHeader ?? ""}`;
+  const fingerprint = `${cfg.url}|${cfg.token ?? ""}|${cfg.authHeader ?? ""}|${cfg.oauthConnected ? "oauth" : ""}`;
   const cached = pool.get(cfg.id);
   if (cached && cached.fingerprint === fingerprint) return cached.client;
   if (cached) await cached.client.close().catch(() => {});
 
   const url = new URL(cfg.url);
   const requestInit = { headers: headers(cfg) };
+  // No static token: sign in with OAuth (Settings → Connect). The provider refreshes tokens on its own.
+  const authProvider = cfg.token ? undefined : new DbOAuthProvider(cfg.id);
   const client = new Client({ name: "film-studio", version: "0.1.0" });
   try {
-    await client.connect(new StreamableHTTPClientTransport(url, { requestInit }));
+    await client.connect(new StreamableHTTPClientTransport(url, { requestInit, authProvider }));
   } catch (e) {
+    if (e instanceof UnauthorizedError || /unauthori|401/i.test((e as Error).message)) {
+      throw new McpToolError(`${cfg.name} is not signed in. Open Settings and press Connect ${cfg.name}.`, "connect", false);
+    }
     // Older servers only speak SSE.
     const legacy = new Client({ name: "film-studio", version: "0.1.0" });
     try {
-      await legacy.connect(new SSEClientTransport(url, { requestInit }));
+      await legacy.connect(new SSEClientTransport(url, { requestInit, authProvider }));
     } catch {
       throw e;
     }
@@ -54,6 +61,7 @@ export async function callTool(cfg: McpServerConfig, tool: string, args: Record<
   try {
     client = await connect(cfg);
   } catch (e) {
+    if (e instanceof McpToolError) throw new McpToolError(e.message, tool, e.retryable);
     throw new McpToolError(`Cannot connect to ${cfg.name} (${cfg.url}): ${(e as Error).message}`, tool);
   }
   let res;
@@ -132,4 +140,11 @@ export function fields(obj: unknown, key: string): string[] {
   if (structured.length) return structured;
   const text = typeof (obj as { text?: unknown })?.text === "string" ? (obj as { text: string }).text : typeof obj === "string" ? obj : "";
   return [...text.matchAll(new RegExp(`^\\s*-?\\s*${key}:\\s*"?([^"\\n]+?)"?\\s*$`, "gm"))].map((m) => m[1]);
+}
+
+/** Drops a pooled connection (after signing out, or to force a fresh sign-in). */
+export async function closeClient(serverId: string) {
+  const e = pool.get(serverId);
+  pool.delete(serverId);
+  await e?.client.close().catch(() => {});
 }

@@ -11,7 +11,7 @@ import type { GenContext } from "@/lib/generation/types";
 /**
  * Full autopilot. One AUTOPILOT job walks the production stage by stage and re-queues itself
  * (`__deferred`) while a stage's jobs are running, so nothing blocks the worker:
- *   score → write → design → frames → clips → sound → export → done
+ *   score → write → design (asset library) → frames → clips → sound → export → done
  * The story gate comes first: below 6 the run stops and asks the filmmaker to change the story;
  * between 6 and 8.5 the Script Doctor rewrites it until it scores 8.5+; then everything runs on its own.
  */
@@ -32,7 +32,7 @@ export interface AutopilotState {
 const STAGE_WORDS: Record<Stage, string> = {
   score: "Scoring the story",
   write: "Writing the film (outline, scenes and shots)",
-  design: "Designing characters and sets",
+  design: "Asset library",
   frames: "Drawing storyboard frames",
   clips: "Generating video clips",
   sound: "Adding voices and music",
@@ -138,24 +138,17 @@ export async function runAutopilot(job: Job, ctx: GenContext): Promise<unknown> 
     }
 
     case "design": {
-      const chars = await db.character.findMany({ where: { projectId }, include: { references: { select: { meta: true } } } });
-      const sets = await db.element.findMany({ where: { projectId, kind: "location" }, include: { references: { select: { meta: true } } } });
-      const sheeted = (refs: { meta: unknown }[]) => refs.some((r) => (r.meta as Record<string, unknown> | null)?.fromSheet);
-      let queued = 0;
-      for (const c of chars.filter((c) => c.role !== "extra" && !sheeted(c.references))) {
-        await svc.queueDesignSheet(projectId, { characterId: c.id, kind: "turnaround" });
-        queued++;
-      }
-      for (const e of sets.filter((e) => !sheeted(e.references)).slice(0, 40)) {
-        await svc.queueDesignSheet(projectId, { elementId: e.id, kind: "plate" });
-        queued++;
-      }
-      if (queued && !st.message?.startsWith("Design queued")) {
-        await setAutopilot(projectId, { message: `Design queued: ${queued} sheet(s)` });
-        return wait(`Designing ${queued} character and set sheet(s)`);
+      // Asset library before frames: character turnarounds, set plates, environments, props and the colour & mood board.
+      if (!st.message?.startsWith("Library queued")) {
+        const lib = await svc.buildAssetLibrary(projectId, { missingOnly: true });
+        if (lib.total) {
+          const q = lib.queued;
+          await setAutopilot(projectId, { message: `Library queued: ${q.character} character, ${q.location} set, ${q.environment} environment, ${q.prop} prop and ${q.mood} mood sheet(s)` });
+          return wait(`Building the asset library: ${lib.total} sheet(s)`);
+        }
       }
       await advance("frames");
-      return wait("Design done");
+      return wait("Asset library ready");
     }
 
     case "frames": {

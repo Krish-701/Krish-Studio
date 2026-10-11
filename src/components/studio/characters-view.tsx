@@ -193,7 +193,7 @@ function WardrobeRow({ c }: { c: Character }) {
   );
 }
 
-function CharacterCard({ c }: { c: Character }) {
+export function CharacterCard({ c }: { c: Character }) {
   const { state, projectId } = useStudio();
   const [desc, setDesc] = React.useState(c.description);
   const [voice, setVoice] = React.useState(c.voiceId?.toString() ?? "");
