@@ -1,10 +1,10 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { ffmpeg, tmpDir } from "./ffmpeg";
+import { ffmpeg, probeDuration, tmpDir } from "./ffmpeg";
 import { describeImage, llmConfig, testLlm, testVision } from "./llm";
 import { callTool, listTools } from "./mcp/client";
 import { magnificProvider } from "./generation/magnific";
-import { DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_VARIANT } from "./generation/catalog";
+import { DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_VARIANT, DEFAULT_VIDEO_MODEL } from "./generation/catalog";
 import { getSettings } from "./settings";
 import { localPath } from "./storage";
 import { persist } from "@/worker/store";
@@ -17,13 +17,16 @@ import { errorMessage } from "./utils";
  *  magnific signed in to Magnific (Freepik) and its tools are reachable
  *  image    Magnific renders one real test image with the default image model, and the AI looks at it
  */
-export type CheckStep = "llm" | "vision" | "magnific" | "image";
+export type CheckStep = "llm" | "vision" | "magnific" | "image" | "video";
 export interface CheckResult {
   step: CheckStep;
   ok: boolean;
   detail: string;
   ms: number;
   url?: string;
+  /** The test image, so the video step can animate it. */
+  key?: string;
+  providerRef?: string;
 }
 
 async function thumb(key: string) {
@@ -45,9 +48,9 @@ async function jpegThumb(key: string) {
   return `data:image/jpeg;base64,${b64}`;
 }
 
-export async function runCheck(step: CheckStep, opts: { model?: string; prompt?: string } = {}): Promise<CheckResult> {
+export async function runCheck(step: CheckStep, opts: { model?: string; prompt?: string; imageKey?: string; imageRef?: string } = {}): Promise<CheckResult> {
   const t0 = Date.now();
-  const done = (ok: boolean, detail: string, url?: string): CheckResult => ({ step, ok, detail, ms: Date.now() - t0, url });
+  const done = (ok: boolean, detail: string, url?: string, extra: Partial<CheckResult> = {}): CheckResult => ({ step, ok, detail, ms: Date.now() - t0, url, ...extra });
   try {
     const s = await getSettings();
     const mag = s.mcpServers.find((m) => m.kind === "magnific" && m.enabled);
@@ -90,7 +93,21 @@ export async function runCheck(step: CheckStep, opts: { model?: string; prompt?:
         } catch (e) {
           seen = `(AI could not look at it: ${errorMessage(e).slice(0, 80)})`;
         }
-        return done(true, `Magnific made a test image with ${model}${model === DEFAULT_IMAGE_MODEL ? " (Flare)" : ""}. AI sees: ${seen.slice(0, 160)}`, stored.url);
+        return done(true, `Magnific made a test image with ${model}${model === DEFAULT_IMAGE_MODEL ? " (Flare)" : ""}. AI sees: ${seen.slice(0, 160)}`, stored.url, { key: stored.key, providerRef: res.providerRef });
+      }
+      case "video": {
+        // A 10-second clip with the default video model at 720p, animated from the test image when there is one.
+        if (!mag || (!mag.token && !mag.oauthConnected)) return done(false, "Connect Magnific first.");
+        const model = opts.model || DEFAULT_VIDEO_MODEL;
+        const ctx = { projectId: "_check", onProgress: async () => {}, onRefUploaded: async () => {} };
+        const start = opts.imageKey ? { key: opts.imageKey, url: "", providerRef: opts.imageRef ?? null, type: "image" as const, label: "test image" } : null;
+        const res = await magnificProvider(mag).video!(
+          { prompt: opts.prompt || "Slow cinematic push-in on the lighthouse at dusk, waves breaking on the rocks, the lamp starts to turn, light rain", aspectRatio: "16:9", model, durationSec: 10, resolution: "720p", startFrame: start },
+          ctx,
+        );
+        const stored = await persist("_check", "clips", res);
+        const sec = await probeDuration(await localPath(stored.key)).catch(() => null);
+        return done(true, `Magnific made a ${sec ? `${sec.toFixed(1)} s` : "10 s"} test clip with ${model} at 720p`, stored.url);
       }
     }
   } catch (e) {

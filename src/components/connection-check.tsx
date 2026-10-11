@@ -7,13 +7,15 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/client";
 import { cn } from "@/lib/utils";
 
-type Step = "llm" | "vision" | "magnific" | "image";
+type Step = "llm" | "vision" | "magnific" | "image" | "video";
 interface Result {
   step: Step;
   ok: boolean;
   detail: string;
   ms: number;
   url?: string;
+  key?: string;
+  providerRef?: string;
 }
 
 const STEPS: { id: Step; label: string }[] = [
@@ -84,6 +86,18 @@ export function ConnectionCheck({ className, compact }: { className?: string; co
   const magOk = results.magnific?.ok;
   const needsSignIn = results.magnific && !results.magnific.ok && /sign|connect|unauthori/i.test(results.magnific.detail);
   const all = STEPS.every((s) => results[s.id]?.ok);
+  /** The 10-second test clip is separate: it spends more credits, so it only runs when asked. */
+  const testClip = async () => {
+    setRunning("video");
+    try {
+      const img = results.image;
+      const r = await api<Result>("/api/check", { body: { step: "video", imageKey: img?.ok ? img.key : undefined, imageRef: img?.ok ? img.providerRef : undefined } });
+      setResults((x) => ({ ...x, video: r }));
+    } catch (e) {
+      setResults((x) => ({ ...x, video: { step: "video", ok: false, detail: (e as Error).message, ms: 0 } }));
+    }
+    setRunning(null);
+  };
 
   return (
     <div className={cn("rounded-2xl border border-line bg-panel p-4", className)}>
@@ -119,6 +133,17 @@ export function ConnectionCheck({ className, compact }: { className?: string; co
             // eslint-disable-next-line @next/next/no-img-element
             <img src={results.image.url} alt="Magnific test" className="mt-2 max-h-56 rounded-lg border border-line" />
           )}
+          {(magOk || results.video || running === "video") && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2 text-xs">
+              <Button size="xs" variant="secondary" disabled={!!running} onClick={testClip}>
+                {running === "video" ? <Loader2 className="animate-spin" /> : <PlugZap />} Make a 10 s test clip
+              </Button>
+              <span className={cn(results.video ? (results.video.ok ? "text-muted" : "text-err") : "text-dim")}>
+                {running === "video" ? "Seedance 2.5 at 720p, animating the test image. This takes a few minutes…" : results.video ? `${results.video.detail}${results.video.ms ? ` · ${Math.round(results.video.ms / 1000)}s` : ""}` : "Seedance 2.5 · 720p · uses credits"}
+              </span>
+            </div>
+          )}
+          {results.video?.url && <video src={results.video.url} controls className="mt-2 max-h-64 rounded-lg border border-line" />}
           {needsSignIn && <p className="text-[11px] text-warn">Press Connect Magnific and sign in with your Magnific / Freepik account, then Check again.</p>}
           {results.llm && !results.llm.ok && <p className="text-[11px] text-warn">Add your OpenRouter key in <Link href="/settings" className="underline">Settings</Link>, then Check again.</p>}
           {all && <p className="text-[11px] text-ok">Everything works. Frames and clips will come from Magnific.</p>}
