@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { decryptSecret, encryptSecret, maskSecret } from "./crypto";
 import { setLiveCatalog, type ModelInfo } from "./generation/catalog";
+import { noDatabase } from "./runtime";
 
 export type Capability = "image" | "video" | "tts" | "music" | "sfx" | "upscale" | "inpaint";
 export const ALL_CAPABILITIES: Capability[] = ["image", "video", "tts", "music", "sfx", "upscale", "inpaint"];
@@ -78,7 +79,29 @@ export function defaultServers(): McpServerConfig[] {
 export const DEFAULT_LLM = { baseUrl: "https://openrouter.ai/api/v1", model: "qwen/qwen3.8-omni-flash" };
 const envKey = () => process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || null;
 
+/** Keys and backends from .env, used while Postgres is turned off. */
+export function settingsFromEnv(): Settings {
+  const base = process.env.LLM_BASE_URL || DEFAULT_LLM.baseUrl;
+  return {
+    llmBaseUrl: base,
+    llmApiKey: envKey(),
+    llmModel: process.env.LLM_MODEL || DEFAULT_LLM.model,
+    agentModels: {},
+    autoAgents: true,
+    llmReasoning: process.env.LLM_REASONING === "1" || (process.env.LLM_REASONING !== "0" && /openrouter\.ai/.test(base)),
+    visionModel: process.env.LLM_VISION_MODEL || "",
+    llmCaps: null,
+    mcpServers: defaultServers(),
+  };
+}
+
 export async function getSettings(): Promise<Settings> {
+  if (noDatabase()) {
+    const s = settingsFromEnv();
+    const { oauthStatus } = await import("./mcp/oauth");
+    for (const server of s.mcpServers) server.oauthConnected = (await oauthStatus(server.id)).connected;
+    return s;
+  }
   let row = await db.appSettings.findUnique({ where: { id: "global" } });
   if (!row) {
     const base = process.env.LLM_BASE_URL || DEFAULT_LLM.baseUrl;
@@ -155,6 +178,7 @@ export async function saveSettings(input: Partial<Settings>) {
       return { ...rest, token: encryptSecret(token || null) };
     });
   }
+  if (noDatabase()) return getPublicSettings();
   await db.appSettings.update({ where: { id: "global" }, data });
   return getPublicSettings();
 }

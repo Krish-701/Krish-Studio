@@ -13,7 +13,7 @@ import { publish } from "./events";
 export const QUEUE_NAME = "studio";
 const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || 4);
 
-type Mem = { pending: string[]; running: number; handler?: (jobId: string) => Promise<void> };
+type Mem = { pending: string[]; running: number; inflight: Set<string>; handler?: (jobId: string) => Promise<void> };
 const g = globalThis as unknown as { __studioQueue?: Queue; __memQueue?: Mem; __redis?: IORedis };
 
 export function redisConnection() {
@@ -23,6 +23,7 @@ export function redisConnection() {
 }
 
 function bullQueue() {
+  if (process.env.KRISH_NO_DB === "1") return null;
   const conn = redisConnection();
   if (!conn) return null;
   if (!g.__studioQueue) g.__studioQueue = new Queue(QUEUE_NAME, { connection: conn });
@@ -30,8 +31,15 @@ function bullQueue() {
 }
 
 function mem(): Mem {
-  if (!g.__memQueue) g.__memQueue = { pending: [], running: 0 };
+  if (!g.__memQueue) g.__memQueue = { pending: [], running: 0, inflight: new Set() };
+  if (!g.__memQueue.inflight) g.__memQueue.inflight = new Set();
   return g.__memQueue;
+}
+
+/** True when this process will run the job, or is already running it. */
+export function memoryHas(jobId: string) {
+  const m = mem();
+  return m.pending.includes(jobId) || m.inflight.has(jobId);
 }
 
 /** Registers the in-process job handler (called by the inline worker). */
@@ -44,14 +52,23 @@ function pump() {
   const m = mem();
   while (m.handler && m.running < CONCURRENCY && m.pending.length) {
     const id = m.pending.shift()!;
+    if (m.inflight.has(id)) continue;
+    m.inflight.add(id);
     m.running++;
     m.handler(id)
       .catch((e) => console.error("[queue] job crashed", id, e))
       .finally(() => {
+        m.inflight.delete(id);
         m.running--;
         pump();
       });
   }
+}
+
+/** Bind the worker from the module graph that is queueing the job, not a stale boot copy. */
+async function ensureWorker() {
+  const { startInlineWorker } = await import("@/worker/inline");
+  startInlineWorker();
 }
 
 async function push(jobId: string, delayMs = 0) {
@@ -59,17 +76,15 @@ async function push(jobId: string, delayMs = 0) {
   if (q) {
     await q.add("run", { jobId }, { jobId: `${jobId}-${Date.now()}`, delay: delayMs, removeOnComplete: 500, removeOnFail: 500 });
   } else {
+    await ensureWorker();
     const run = () => {
-      mem().pending.push(jobId);
+      const m = mem();
+      if (m.pending.includes(jobId) || m.inflight.has(jobId)) return;
+      m.pending.push(jobId);
       pump();
     };
     if (delayMs) setTimeout(run, delayMs);
     else run();
-    if (!mem().handler) {
-      // Lazily boot the in-process worker the first time something is queued.
-      const { startInlineWorker } = await import("@/worker/inline");
-      startInlineWorker();
-    }
   }
 }
 

@@ -30,7 +30,11 @@ const deferredJobs = new Set<string>();
  */
 export async function processJob(jobId: string) {
   const job = await db.job.findUnique({ where: { id: jobId } });
-  if (!job || job.status === "CANCELED" || job.status === "SUCCEEDED") return;
+  if (!job) {
+    console.warn(`[job ${jobId}] missing from the store; leaving it for the next sweep`);
+    return;
+  }
+  if (job.status === "CANCELED" || job.status === "SUCCEEDED") return;
 
   await db.job.update({ where: { id: jobId }, data: { status: "RUNNING", attempts: { increment: 1 }, step: "Starting", progress: 1, error: null } });
   emit(job, { status: "RUNNING", progress: 1, step: "Starting" });

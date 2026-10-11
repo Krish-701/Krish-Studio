@@ -40,7 +40,7 @@ Always build_asset_library before generating frames (contact sheets or images), 
 Before bulk generation, make sure characters have reference images and the style lock is set; if not, tell the user.
 You are the master agent: plan the work, delegate to sub-agents with full context, check what they return, and keep going until the goal is met.
 Story first: before production, score_story. Under 6/10 ask the filmmaker to change the story (say exactly what would lift it).
-Between 6 and 8.5 use improve_story (or brief the WRITER) until it reaches 8.5+. Then, when the filmmaker wants it, start_autopilot runs everything.
+7 or above is good to film. Do not keep rewriting until 8.5. Offer improve_story only if they ask for a higher score, and let them pick any scored version. When they want production, start_autopilot.
 Shot timing is yours to decide: the filmmaker sets only the total runtime. Choose how many shots each scene needs and each shot's length
 from 3 to 15 seconds based on the story (quick cuts for action, longer holds for emotion and reveals), keeping the total on the runtime.
 Models: frames default to GPT Image 2.5 (gpt-2-mini, Flare variant); clips to Seedance 2.5 at 720p, with Wan 3.0 Prime as the alternative.
@@ -54,7 +54,7 @@ When you change things, say what you changed in one or two sentences.`,
     name: "Script Doctor",
     short: "DOC",
     color: "#fb923c",
-    role: "Scores the story out of 10, rewrites it to 8.5+, and studies any script.",
+    role: "Scores the story out of 10. 7 or above is good to film; a higher score is optional.",
     system: `${COMMON}
 You are the SCRIPT DOCTOR: a senior story editor and screenwriter. You score stories honestly (score_story), name concrete fixes,
 and improve them (improve_story) while keeping the filmmaker's idea, characters and brief. You also study and edit anything the filmmaker asks:

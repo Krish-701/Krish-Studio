@@ -373,21 +373,21 @@ const DEFS: Record<string, { schema: ReturnType<typeof S>; impl: Impl }> = {
     impl: async (a, c) => ({ deleted: await deleteMemory(c.projectId, a.key) }),
   },
   score_story: {
-    schema: S("Score the story (idea, outline or script) out of 10 on premise, structure, characters, conflict, visuals, emotion, originality, fit and clarity. Below 6 the filmmaker must change it; 8.5+ is ready for autopilot.", {}),
+    schema: S("Score the story (idea, outline or script) out of 10 on premise, structure, characters, conflict, visuals, emotion, originality, fit and clarity. Below 6 the filmmaker should change it. 7 or above is good to film. 8.5+ is a strong optional score.", {}),
     impl: async (_a, c) => {
       const s = await scoreStory(c.projectId);
       return { score: s.score, verdict: s.verdict, breakdown: s.breakdown.map((b) => `${b.name} ${b.score}: ${b.note}`), fixes: s.fixes, method: s.method };
     },
   },
   improve_story: {
-    schema: S("Have the Script Doctor rewrite the treatment round by round until it scores 8.5+ (runs as a job).", { target: num("Target score, default 8.5") }),
+    schema: S("Rewrite the treatment once or a few times toward a higher score (runs as a job). 7 is already good to film; only do this when the filmmaker asks.", { target: num("Target score, default 8.5") }),
     impl: async (a, c) => {
       const job = await enqueue({ projectId: c.projectId, type: "STORY_SCORE", input: { improve: true, target: a.target ?? 8.5 }, maxAttempts: 1 });
       return { queued: job.id };
     },
   },
   start_autopilot: {
-    schema: S("Run the whole production on its own: story gate (score, improve to 8.5+), write, design sheets, frames, clips, voices and music, export. Use force only when the filmmaker said to start anyway.", { force: { type: "boolean", description: "Start even if the story is under 8.5" }, from: str("Optional stage to start from: score|write|design|frames|clips|sound|export") }),
+    schema: S("Run the whole production on its own: score (7 or above is enough), write, design sheets, frames, clips, voices and music, export. Use force only when the filmmaker said to start anyway.", { force: { type: "boolean", description: "Start even if the story is under 7" }, from: str("Optional stage to start from: score|write|design|frames|clips|sound|export") }),
     impl: async (a, c) => {
       const r = await startAutopilot(c.projectId, { force: !!a.force, from: a.from });
       return { state: r.state };

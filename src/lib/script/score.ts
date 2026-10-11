@@ -6,11 +6,14 @@ import { logActivity } from "../activity";
 
 /**
  * Story score: before a film is produced, the Script Doctor rates the idea / outline / script out of 10.
- *  - below 6   → the user is asked to change the story before anything is written or generated
- *  - 6 to 8.5  → "Improve" rewrites the treatment, re-scoring each round, until it reaches 8.5
- *  - 8.5+      → ready for full autopilot
+ *  - below 6   → the user is asked to change the story before anything is written
+ *  - 7 or more → good enough to film. The user can write the script from this version,
+ *                pick an earlier scored version, or improve again
+ *  - 8.5+      → a strong score. Optional, not required to start
  */
 export const SCORE_BLOCK = 6;
+/** Good enough to write the script and continue. */
+export const SCORE_GO = 7;
 export const SCORE_READY = 8.5;
 
 export const CRITERIA = [
@@ -36,7 +39,9 @@ export interface StoryScore {
   method: "ai" | "estimate";
   at: string;
   rounds?: number;
-  history?: { score: number; at: string; synopsis?: string | null }[];
+  /** Index into history when the filmmaker picked an earlier version. */
+  selected?: number;
+  history?: { score: number; at: string; synopsis?: string | null; logline?: string | null }[];
 }
 
 export function verdictFor(score: number): StoryScore["verdict"] {
@@ -134,7 +139,7 @@ export async function scoreStory(projectId: string, opts: { round?: number; hist
   } else {
     r = estimate(text, source);
   }
-  const s: StoryScore = { ...r, verdict: verdictFor(r.score), at: new Date().toISOString(), rounds: opts.round, history: [...(opts.history ?? []), { score: r.score, at: new Date().toISOString(), synopsis: project.synopsis }].slice(-8) };
+  const s: StoryScore = { ...r, verdict: verdictFor(r.score), at: new Date().toISOString(), rounds: opts.round, history: [...(opts.history ?? []), { score: r.score, at: new Date().toISOString(), synopsis: project.synopsis, logline: project.logline }].slice(-8) };
   await save(projectId, s);
   await logActivity(projectId, {
     kind: "agent",
@@ -151,6 +156,29 @@ export async function scoreStory(projectId: string, opts: { round?: number; hist
  * Keeps the filmmaker's idea, characters and brief; only the craft improves. An existing outline is
  * marked for rewriting so the improved story reaches the board.
  */
+/** Restore a scored version and make it the story the script is written from. */
+export async function useStoryVersion(projectId: string, index: number) {
+  const project = await db.project.findUniqueOrThrow({ where: { id: projectId } });
+  const s = project.storyScore as unknown as StoryScore | null;
+  const h = s?.history?.[index];
+  if (!h?.synopsis?.trim()) throw new Error("That version has no story text.");
+  const next: StoryScore = {
+    ...s!,
+    score: h.score,
+    verdict: verdictFor(h.score),
+    at: new Date().toISOString(),
+    summary: `Using the version scored ${h.score.toFixed(1)}/10.`,
+    selected: index,
+  };
+  await db.project.update({
+    where: { id: projectId },
+    data: { synopsis: h.synopsis, ...(h.logline ? { logline: h.logline } : {}), storyScore: next as never },
+  });
+  publish(projectId, { type: "refresh", scope: "project" });
+  await logActivity(projectId, { kind: "user", actor: "you", message: `Chose the ${h.score.toFixed(1)}/10 story version` });
+  return next;
+}
+
 export async function improveStory(projectId: string, opts: { target?: number; maxRounds?: number; onProgress?: (pct: number, step: string) => void | Promise<void> } = {}) {
   const target = opts.target ?? SCORE_READY;
   const maxRounds = opts.maxRounds ?? 4;
@@ -176,9 +204,11 @@ JSON: {"logline":"","synopsis":"","changes":["what you changed and why"]}`,
       { agent: "WRITER", temperature: 0.6 },
     );
     if (!out.synopsis?.trim()) break;
+    const before = s.score;
     await db.project.update({ where: { id: projectId }, data: { synopsis: out.synopsis.trim(), logline: out.logline?.trim() || project.logline } });
     await logActivity(projectId, { kind: "agent", actor: "Script Doctor", message: `Round ${round}: rewrote the story`, data: { changes: out.changes } });
     s = await scoreStory(projectId, { round, history: s.history });
+    if (s.score <= before) break;
   }
   if (round && (await db.sequence.count({ where: { projectId } }))) {
     await logActivity(projectId, { kind: "system", level: "warn", actor: "Script Doctor", message: "The story changed after the outline was written; rewrite the film to use the improved story." });

@@ -1,8 +1,11 @@
 import { randomBytes } from "crypto";
+import { promises as fs } from "fs";
+import path from "path";
 import { auth, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { db } from "../db";
 import { decryptSecret, encryptSecret } from "../crypto";
+import { noDatabase } from "../runtime";
 import type { McpServerConfig } from "../settings";
 
 /**
@@ -21,7 +24,16 @@ interface Stored {
 const appUrl = () => (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
 export const callbackUrl = () => `${appUrl()}/api/mcp/oauth/callback`;
 
+const authFile = () => path.join(process.cwd(), "data", "mcp-auth.json");
+
 async function load(): Promise<Record<string, Stored>> {
+  if (noDatabase()) {
+    try {
+      return JSON.parse(await fs.readFile(authFile(), "utf8")) as Record<string, Stored>;
+    } catch {
+      return {};
+    }
+  }
   const row = await db.appSettings.findUnique({ where: { id: "global" }, select: { mcpAuth: true } });
   return (row?.mcpAuth as Record<string, Stored> | null) ?? {};
 }
@@ -30,6 +42,11 @@ async function patch(serverId: string, p: Partial<Stored> | null) {
   const all = await load();
   if (p === null) delete all[serverId];
   else all[serverId] = { ...all[serverId], ...p };
+  if (noDatabase()) {
+    await fs.mkdir(path.dirname(authFile()), { recursive: true });
+    await fs.writeFile(authFile(), JSON.stringify(all));
+    return;
+  }
   await db.appSettings.update({ where: { id: "global" }, data: { mcpAuth: all as never } });
 }
 

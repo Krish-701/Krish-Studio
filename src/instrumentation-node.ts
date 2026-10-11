@@ -1,5 +1,14 @@
 /** Node-only boot: starts the job worker inside the Next.js server when configured. */
 async function boot() {
+  if (process.env.KRISH_NO_DB === "1") {
+    const { startInlineWorker } = await import("./worker/inline");
+    const { db } = await import("./lib/db");
+    const { requeue } = await import("./lib/queue");
+    startInlineWorker();
+    const stale = await db.job.findMany({ where: { status: { in: ["RUNNING", "QUEUED"] } } }).catch(() => []);
+    for (const j of stale) await requeue(j.id);
+    return;
+  }
   if (process.env.REDIS_URL && process.env.INLINE_WORKER === "1") {
     const { startBullWorker } = await import("./worker/bull");
     await startBullWorker();

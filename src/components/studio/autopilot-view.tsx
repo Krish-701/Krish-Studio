@@ -13,6 +13,7 @@ import { ConnectionCheck } from "@/components/connection-check";
 
 /** Mirrors src/lib/script/score.ts and src/worker/autopilot.ts (kept client-safe). */
 const BLOCK = 6;
+const GO = 7;
 const READY = 8.5;
 const STAGES = [
   { id: "score", label: "Story score" },
@@ -33,7 +34,8 @@ interface Score {
   summary: string;
   method: "ai" | "estimate";
   rounds?: number;
-  history?: { score: number; at: string }[];
+  selected?: number;
+  history?: { score: number; at: string; synopsis?: string | null; logline?: string | null }[];
 }
 interface Autopilot {
   status: "running" | "paused" | "needs_input" | "done" | "failed";
@@ -41,8 +43,8 @@ interface Autopilot {
   message?: string;
 }
 
-const tone = (s: number) => (s < BLOCK ? "text-err" : s < READY ? "text-warn" : "text-ok");
-const bar = (s: number) => (s < BLOCK ? "bg-err" : s < READY ? "bg-warn" : "bg-ok");
+const tone = (s: number) => (s < BLOCK ? "text-err" : s < GO ? "text-warn" : "text-ok");
+const bar = (s: number) => (s < BLOCK ? "bg-err" : s < GO ? "bg-warn" : "bg-ok");
 
 /** The brief: the filmmaker's basic suggestions and prompt, given to every agent on this project. */
 export function BriefBox({ className }: { className?: string }) {
@@ -90,7 +92,8 @@ export function StoryGate({ compact }: { compact?: boolean }) {
       setBusy(null);
     }
   };
-  const scoreIt = (improve: boolean) => run(improve ? "improve" : "score", () => api(`/api/projects/${projectId}/score`, { body: { improve } }), improve ? "The Script Doctor is improving your story to 8.5+" : "Scoring your story");
+  const scoreIt = (improve: boolean) => run(improve ? "improve" : "score", () => api(`/api/projects/${projectId}/score`, { body: { improve } }), improve ? "Rewriting the story. Pick a version when the new score appears." : "Scoring your story");
+  const useVersion = (index: number) => run(`use-${index}`, () => api(`/api/projects/${projectId}/score`, { body: { useHistory: index } }), "Using that version. Writing the script from it now.");
   const start = (force = false) =>
     run("start", async () => {
       await api(`/api/projects/${projectId}/autopilot`, { body: { action: "start", force } });
@@ -121,13 +124,15 @@ export function StoryGate({ compact }: { compact?: boolean }) {
           {scoring ? (
             <span className="flex items-center gap-1.5"><Loader2 className="size-3.5 animate-spin" /> {scoring.step || "Script Doctor is reading your story"}</span>
           ) : s === null ? (
-            "Before anything is made, the Script Doctor scores your story out of 10. Under 6 you'll be asked to change it; it can rewrite it to 8.5+ for you."
+            "The Script Doctor scores your story out of 10. Under 6, change the story first. 7 or above is good to film — pick a version, or improve it if you want a higher score."
           ) : s < BLOCK ? (
-            <span className="text-err">Under {BLOCK}: please change the story before production (see the fixes below), then score again.</span>
+            <span className="text-err">Under {BLOCK}: change the story (see the fixes), or pick a stronger version from the history.</span>
+          ) : s < GO ? (
+            <span className="text-warn">Suggestion: {GO} or above is a good score to film. You can still pick this version, pick another from the history, or improve it.</span>
           ) : s < READY ? (
-            <span className="text-warn">Good, not great. Improve it to {READY}+ before the full autopilot, or start anyway.</span>
+            <span className="text-ok">{GO} or above is good to film. Start with this version, pick another from the history, or improve it if you want a higher score. {READY}+ is optional.</span>
           ) : (
-            <span className="text-ok">Ready. Start the full autopilot whenever you like.</span>
+            <span className="text-ok">Strong score. Start with this version, or pick another from the history.</span>
           )}
           {score?.method === "estimate" && <div className="mt-1 text-dim">Estimate only: add an AI model in Settings for a real review.</div>}
         </div>
@@ -135,9 +140,9 @@ export function StoryGate({ compact }: { compact?: boolean }) {
           <Button variant="secondary" size="sm" disabled={!hasStory || !!busy || !!scoring} onClick={() => scoreIt(false)}>
             {busy === "score" ? <Loader2 className="animate-spin" /> : <Gauge />} {s === null ? "Score my story" : "Score again"}
           </Button>
-          {s !== null && s < READY && (
+          {s !== null && (
             <Button variant="outline" size="sm" disabled={!!busy || !!scoring} onClick={() => scoreIt(true)}>
-              {busy === "improve" ? <Loader2 className="animate-spin" /> : <Wand2 />} Improve to {READY}+
+              {busy === "improve" ? <Loader2 className="animate-spin" /> : <Wand2 />} Improve story
             </Button>
           )}
         </div>
@@ -161,22 +166,46 @@ export function StoryGate({ compact }: { compact?: boolean }) {
         </div>
       )}
       {score?.summary && !compact && <p className="text-xs text-muted">{score.summary}</p>}
-      {score?.history && score.history.length > 1 && (
-        <div className="flex items-center gap-1.5 text-[11px] text-dim">History: {score.history.map((h, i) => <span key={i} className={tone(h.score)}>{h.score.toFixed(1)}{i < score.history!.length - 1 ? " →" : ""}</span>)}</div>
+      {score?.history && score.history.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium">Score history</div>
+          <p className="text-[11px] text-muted">{GO} or above is a good score to film. Select any version and the script is written from that story. Improve story writes another version you can choose later.</p>
+          {score.history.map((h, i) => {
+            const current = score.selected === i || (score.selected == null && i === score.history!.length - 1);
+            const label = h.score >= READY ? "Strong" : h.score >= GO ? "Good to film" : h.score >= BLOCK ? "You can still use it" : "Needs changes";
+            return (
+              <div key={`${h.at}-${i}`} className={cn("rounded-lg border p-3", current ? "border-accent/50 bg-accent/5" : "border-line")}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={cn("font-display text-lg font-bold leading-none", tone(h.score))}>{h.score.toFixed(1)}</span>
+                  <span className="text-[11px] text-muted">{label}</span>
+                  {current && <span className="text-[11px] text-accent">Current story</span>}
+                  <Button size="sm" className="ml-auto" disabled={!h.synopsis?.trim() || !!busy || !!scoring || !!pilot} onClick={() => useVersion(i)}>
+                    {busy === `use-${i}` ? <Loader2 className="animate-spin" /> : <Play />} Use this version
+                  </Button>
+                </div>
+                {h.synopsis?.trim() ? (
+                  <p className="mt-1.5 line-clamp-3 text-[11px] text-muted">{h.synopsis}</p>
+                ) : (
+                  <p className="mt-1.5 text-[11px] text-dim">This score has no saved story text.</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
         <Rocket className="size-5 text-accent" />
         <div className="mr-auto text-sm font-medium">
           Full autopilot
-          <div className="text-[11px] font-normal text-muted">Writes, designs, draws, animates, scores and exports on its own. The agent picks every shot&apos;s length (3–15 s) from the story.</div>
+          <div className="text-[11px] font-normal text-muted">Uses the current story ({GO}+ is enough). Or pick a version above. The agent chooses each shot length (3–15 s).</div>
         </div>
         {running ? (
           <Button variant="secondary" disabled={!!busy} onClick={pause}><Pause /> Pause</Button>
         ) : (
           <>
             <Button disabled={!hasStory || blocked || !!busy || !!scoring} onClick={() => start(false)} title={blocked ? `Story is under ${BLOCK}/10` : undefined}>
-              {busy === "start" ? <Loader2 className="animate-spin" /> : <Play />} {ap?.status === "paused" ? "Resume autopilot" : s !== null && s < READY ? "Improve & start autopilot" : "Start full autopilot"}
+              {busy === "start" ? <Loader2 className="animate-spin" /> : <Play />} {ap?.status === "paused" ? "Resume autopilot" : "Start full autopilot"}
             </Button>
             {ap?.status === "needs_input" && s !== null && s >= BLOCK && <Button variant="outline" disabled={!!busy} onClick={() => start(true)}>Start anyway</Button>}
           </>
@@ -220,7 +249,7 @@ export function AutopilotView() {
     <div className="mx-auto max-w-4xl space-y-5 p-4 sm:p-6">
       <div>
         <h1 className="flex items-center gap-2 font-display text-2xl font-bold"><Sparkles className="size-6 text-accent" /> Autopilot</h1>
-        <p className="mt-1 text-sm text-muted">You set the runtime and the story. The agents score it, improve it, then make the whole film. Talk to the Director at any time; it learns from what you say on this project.</p>
+        <p className="mt-1 text-sm text-muted">You set the runtime and the story. A score of 7 or above is good to film. Pick a scored version or improve it, then the agents make the film.</p>
       </div>
       <ConnectionCheck compact />
       <PreviewBanner />

@@ -1,6 +1,7 @@
 node_modules
 .next
 storage
+data
 .env
 *.tsbuildinfo
 next-env.d.ts

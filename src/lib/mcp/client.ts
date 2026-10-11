@@ -18,16 +18,22 @@ function headers(cfg: McpServerConfig): Record<string, string> {
   return { [h]: h.toLowerCase() === "authorization" && !/^bearer /i.test(cfg.token) ? `Bearer ${cfg.token}` : cfg.token };
 }
 
+/** Magnific MCP accepts the OAuth sign-in, not the REST API key. A saved sign-in wins. */
+function preferOAuth(cfg: McpServerConfig) {
+  return !!cfg.oauthConnected;
+}
+
 async function connect(cfg: McpServerConfig): Promise<Client> {
-  const fingerprint = `${cfg.url}|${cfg.token ?? ""}|${cfg.authHeader ?? ""}|${cfg.oauthConnected ? "oauth" : ""}`;
+  const oauth = preferOAuth(cfg);
+  const fingerprint = `${cfg.url}|${oauth ? "" : (cfg.token ?? "")}|${cfg.authHeader ?? ""}|${oauth ? "oauth" : ""}`;
   const cached = pool.get(cfg.id);
   if (cached && cached.fingerprint === fingerprint) return cached.client;
   if (cached) await cached.client.close().catch(() => {});
 
   const url = new URL(cfg.url);
-  const requestInit = { headers: headers(cfg) };
-  // No static token: sign in with OAuth (Settings → Connect). The provider refreshes tokens on its own.
-  const authProvider = cfg.token ? undefined : new DbOAuthProvider(cfg.id);
+  const requestInit = { headers: oauth ? {} : headers(cfg) };
+  // No static token, or a completed sign-in: OAuth refreshes tokens on its own.
+  const authProvider = oauth || !cfg.token ? new DbOAuthProvider(cfg.id) : undefined;
   const client = new Client({ name: "film-studio", version: "0.1.0" });
   try {
     await client.connect(new StreamableHTTPClientTransport(url, { requestInit, authProvider }));

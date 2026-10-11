@@ -45,7 +45,7 @@ function bus(): Bus {
     const emitter = new EventEmitter();
     emitter.setMaxListeners(1000);
     const b: Bus = { emitter };
-    if (process.env.REDIS_URL) {
+    if (process.env.REDIS_URL && process.env.KRISH_NO_DB !== "1") {
       b.pub = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: false });
       b.sub = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: false });
       b.sub.on("pmessage", (_p, channel, msg) => {

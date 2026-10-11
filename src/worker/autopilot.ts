@@ -5,15 +5,16 @@ import { enqueue } from "@/lib/queue";
 import { logActivity } from "@/lib/activity";
 import { writeWorkspace } from "@/lib/workspace";
 import * as svc from "@/lib/services";
-import { improveStory, scoreStory, SCORE_BLOCK, SCORE_READY, type StoryScore } from "@/lib/script/score";
+import { scoreStory, SCORE_BLOCK, SCORE_GO, type StoryScore } from "@/lib/script/score";
 import type { GenContext } from "@/lib/generation/types";
 
 /**
  * Full autopilot. One AUTOPILOT job walks the production stage by stage and re-queues itself
  * (`__deferred`) while a stage's jobs are running, so nothing blocks the worker:
  *   score → write → design (asset library) → frames → clips → sound → export → done
- * The story gate comes first: below 6 the run stops and asks the filmmaker to change the story;
- * between 6 and 8.5 the Script Doctor rewrites it until it scores 8.5+; then everything runs on its own.
+ * The story gate comes first: below 6 the run stops and asks the filmmaker to change the story.
+ * 7 or above is enough to write. The filmmaker can also pick an earlier scored version or improve again.
+ * 8.5 is a strong score and is not required.
  */
 export const STAGES = ["score", "write", "design", "frames", "clips", "sound", "export", "done"] as const;
 export type Stage = (typeof STAGES)[number];
@@ -25,7 +26,7 @@ export interface AutopilotState {
   startedAt?: string;
   updatedAt?: string;
   jobId?: string;
-  /** Start even though the story scored under 8.5 (the filmmaker said so). */
+  /** Start even though the story scored under 7 (the filmmaker said so). */
   force?: boolean;
 }
 
@@ -104,13 +105,11 @@ export async function runAutopilot(job: Job, ctx: GenContext): Promise<unknown> 
   await ctx.onProgress(Math.round((STAGES.indexOf(st.stage) / (STAGES.length - 1)) * 100), STAGE_WORDS[st.stage]);
   switch (st.stage) {
     case "score": {
-      let s = await scoreStory(projectId);
-      if (s.method === "ai" && s.score < SCORE_BLOCK && !st.force) return needsInput(projectId, s, "rework");
-      if (s.method === "ai" && s.score < SCORE_READY) {
-        await directorSays(projectId, `The story scores ${s.score.toFixed(1)}/10. The Script Doctor is improving it to ${SCORE_READY}+ before production starts.`);
-        s = await improveStory(projectId, { onProgress: ctx.onProgress });
-        if (s.score < SCORE_READY && !st.force) return needsInput(projectId, s, "stuck");
-      }
+      const project = await db.project.findUniqueOrThrow({ where: { id: projectId } });
+      let s = (project.storyScore as unknown as StoryScore | null) ?? null;
+      if (!s) s = await scoreStory(projectId);
+      // 7 or above is enough to write. Below that, the filmmaker picks a version or improves.
+      if (s.method === "ai" && s.score < SCORE_GO && !st.force) return needsInput(projectId, s, s.score < SCORE_BLOCK ? "rework" : "choose");
       if (s.method === "estimate") await logActivity(projectId, { kind: "system", level: "warn", actor: "Director", message: "No AI model configured: the story score is only an estimate, so autopilot goes ahead." });
       // The improved story must reach the board: rewrite an outline written before it changed.
       const stale = s.rounds && (await db.sequence.count({ where: { projectId } }));
@@ -211,12 +210,14 @@ export async function runAutopilot(job: Job, ctx: GenContext): Promise<unknown> 
   }
 }
 
-async function needsInput(projectId: string, s: StoryScore, why: "rework" | "stuck") {
+async function needsInput(projectId: string, s: StoryScore, why: "rework" | "stuck" | "choose") {
   const fixes = s.fixes.slice(0, 5).map((f) => `• ${f}`).join("\n");
   const msg =
     why === "rework"
       ? `The story scores ${s.score.toFixed(1)}/10, under ${SCORE_BLOCK}, so I haven't started production. Please change the story (Story score panel or tell me here). What would lift it most:\n${fixes}`
-      : `After ${s.rounds ?? 0} rewrite(s) the story scores ${s.score.toFixed(1)}/10, short of ${SCORE_READY}. Tell me what to change, or press "Start anyway". Still open:\n${fixes}`;
+      : why === "choose"
+        ? `The story scores ${s.score.toFixed(1)}/10. ${SCORE_GO} or above is good to film. Pick a version from the score history, or press Improve for another rewrite.`
+        : `The story scores ${s.score.toFixed(1)}/10. Pick a version from the score history, or tell me what to change.\n${fixes}`;
   await setAutopilot(projectId, { status: "needs_input", stage: "score", message: msg });
   await directorSays(projectId, msg);
   await logActivity(projectId, { kind: "system", level: "warn", actor: "Director", message: `Autopilot waiting for you: story ${s.score.toFixed(1)}/10` });
